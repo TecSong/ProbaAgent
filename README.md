@@ -1,38 +1,86 @@
-## 简介
+# ProbaAgent
 
-该项目演示如何基于 LangChain 与 Polymarket 官方 `py-clob-client`（参考 https://github.com/polymarket/py-clob-client ）构建一个可以用自然语言完成「查看订单 / 下订单 / 取消订单」的智能体。所有接口约定均来自 Context7 获取的官方文档，保证与最新 CLOB API 一致。
+LangChain agent that speaks natural language to the Polymarket CLOB API. The project wraps the official [`py-clob-client`](https://github.com/polymarket/py-clob-client) SDK, exposes it through structured LangChain tools, and ships both a command-line experience and a full-stack Flask + React chatbot.
 
-## 快速开始
+## Highlights
 
-1. **安装依赖**
+- **End-to-end workflow** – inspect open orders, list markets, fetch quotes, submit or cancel trades.
+- **Production-friendly API** – Flask server with CORS and history management at `/api/chat`.
+- **Modern UI** – Vite + React single-page app with optimistic updates and status feedback.
+- **Configurable** – all credentials and runtime knobs live in `.env`.
+
+## Prerequisites
+
+- Python 3.11+
+- Node.js 18+ (for the React frontend)
+- Polymarket wallet/private key and OpenAI API key
+
+## Backend Quickstart (CLI or API)
+
+1. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
-2. **配置环境变量**  
-   拷贝 `.env.example` 为 `.env` 并填写：
-   - `OPENAI_API_KEY`：LangChain 使用的 LLM（默认 gpt-4o-mini）。
-   - `POLYMARKET_HOST`：CLOB 入口，来自 py-clob-client 文档（默认 `https://clob.polymarket.com`）。
-   - `POLYMARKET_CHAIN_ID`、`POLYMARKET_SIGNATURE_TYPE`：链 ID 与签名方式，Polygon 主网建议 `137` 和 `0`。
-   - `POLYMARKET_PRIVATE_KEY`：用于签名订单的钱包私钥（请妥善保管）。
-   - `POLYMARKET_FUNDER`：可选，邮件/Magic 钱包用户需提供资方地址。
-   - `POLYMARKET_GAMMA_BASE`：Gamma Markets API 基础地址（默认 `https://gamma-api.polymarket.com`），用于查询市场列表。
-   - `POLYMARKET_DEBUG`：设置为 `true`/`1` 时会开启调试模式，输出订单 payload 与 Gamma 调用日志，便于排查问题。
-3. **运行交互式 CLI**
+2. **Configure environment variables**  
+   Copy `.env.example` to `.env` and fill in:
+   - `OPENAI_API_KEY` – model used by LangChain (defaults to `gpt-4o-mini`).
+   - `POLYMARKET_HOST` – CLOB endpoint (default `https://clob.polymarket.com`).
+   - `POLYMARKET_CHAIN_ID` / `POLYMARKET_SIGNATURE_TYPE` – Polygon mainnet uses `137` / `0`.
+   - `POLYMARKET_PRIVATE_KEY` – private key for signing orders (store securely!).
+   - `POLYMARKET_FUNDER` – optional for EOAs; required for Magic/funder setups.
+   - `POLYMARKET_GAMMA_BASE` – Gamma Markets API base (default `https://gamma-api.polymarket.com`).
+   - `POLYMARKET_DEBUG` – set to `true`/`1` to log payloads and HTTP traces.
+3. **Run the interactive CLI**
    ```bash
    python -m polymarket_agent.main --verbose
    ```
-   在提示符中输入 “帮我查看市场 xxx 的未成交订单”等自然语言指令即可。
+   Enter prompts such as “List my open orders for market xyz” or “Place a buy order on token abc at 0.42”.
 
-## 架构说明
+## Flask + React Chatbot
 
-- `polymarket_agent.client.PolymarketClient`：对 py-clob-client 的轻量封装，并额外封装 Gamma `/markets` 接口，实现市场列表查询。
-- `polymarket_agent.tools.build_polymarket_tools`：将客户端方法包装成 LangChain `StructuredTool`，包括“查订单 / 列市场 / 查市场详情 / 查价格 / 下单 / 撤单”等操作，参数遵循官方文档。
-- `polymarket_agent.agent.build_polymarket_agent`：参考 https://docs.langchain.com/oss/python/langchain/agents 的最新 `create_agent` 流程，直接以 LangChain 官方 Agent API 管理工具调用。
-- `polymarket_agent.main`：简单 CLI 循环，维护对话历史，便于连续多轮操作。
+### 1. Start the Flask backend
 
-## 进一步扩展
+```bash
+# Optional but recommended: use a virtualenv
+export FRONTEND_ORIGIN=http://localhost:5173
+python -m flask --app src.server run --port 8000
+```
 
-1. 支持行情、资产、资金划转等更多 Polymarket 端点，并暴露为新工具。
-2. 接入检索增强（RAG），将市场元数据、策略提示等知识喂给系统消息。
-3. 在服务端封装为 REST/gRPC/Slack Bot，以支持多终端调用。
-4. 为关键路径编写集成测试，使用 VCR/pytest-httpx 之类的工具回放 Polymarket 响应。
+Useful environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `8000` | Overrides the listening port when running `src.server`. |
+| `FRONTEND_ORIGIN` | `*` | CORS allowlist for `/api/*`. Set to your Vite dev server or production domain. |
+| `FLASK_DEBUG` | `false` | Enables Flask debug + live reload. |
+| `CHATBOT_INCLUDE_TRACE` | `false` | Adds the LangChain `raw` payload to `/api/chat` responses for debugging. |
+
+### 2. Launch the React frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server runs on `http://localhost:5173` and proxies `/api/*` to `http://localhost:8000`. For production builds, configure `VITE_API_BASE` to point at the deployed API (e.g., `/api` behind a reverse proxy) and run `npm run build`.
+
+### 3. Chat in the browser
+
+Visit http://localhost:5173 to talk to the agent. Each message sends the accumulated history to `/api/chat`, which invokes the LangChain agent and returns the updated transcript plus the latest reply.
+
+## Project Structure
+
+- `polymarket_agent/client.py` – thin wrapper around `py-clob-client` + Gamma `/markets`.
+- `polymarket_agent/tools.py` – converts client methods into LangChain `StructuredTool`s.
+- `polymarket_agent/agent.py` – builds the agent via `langchain.agents.create_agent`.
+- `polymarket_agent/main.py` – simple CLI loop maintaining conversational history.
+- `src/server.py` – Flask service exposing `/health` and `/api/chat`.
+- `frontend/` – Vite + React SPA with a polished chat interface.
+
+## Extending the Agent
+
+1. Add more Polymarket endpoints (balances, transfers, market creation, etc.) and expose them as new tools.
+2. Layer in retrieval-augmented context (market metadata, strategy prompts) via LangChain retrievers.
+3. Wrap the Flask server with additional transports (REST, gRPC, Slack bot, Telegram bot).
+4. Add integration tests using VCR/pytest-httpx to replay Polymarket responses across critical flows.
