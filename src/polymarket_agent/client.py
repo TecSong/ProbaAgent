@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import logging
 import requests
@@ -82,23 +82,127 @@ class PolymarketClient:
 
     def list_markets(
         self,
-        tag_id: Optional[str] = None,
-        closed: bool = False,
         limit: int = 25,
         offset: int = 0,
+        order: Optional[str] = None,
+        ascending: Optional[bool] = None,
+        id: Optional[Sequence[int]] = None,
+        slug: Optional[Sequence[str]] = None,
+        clob_token_ids: Optional[Sequence[str]] = None,
+        condition_ids: Optional[Sequence[str]] = None,
+        market_maker_address: Optional[Sequence[str]] = None,
+        liquidity_num_min: Optional[float] = None,
+        liquidity_num_max: Optional[float] = None,
+        volume_num_min: Optional[float] = None,
+        volume_num_max: Optional[float] = None,
+        start_date_min: Optional[str] = None,
+        start_date_max: Optional[str] = None,
+        end_date_min: Optional[str] = None,
+        end_date_max: Optional[str] = None,
+        tag_id: Optional[int | str] = None,
+        related_tags: Optional[bool] = None,
+        cyom: Optional[bool] = None,
+        uma_resolution_status: Optional[str] = None,
+        game_id: Optional[str] = None,
+        sports_market_types: Optional[Sequence[str]] = None,
+        rewards_min_size: Optional[float] = None,
+        question_ids: Optional[Sequence[str]] = None,
+        include_tag: Optional[bool] = None,
+        closed: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """
-        Fetch markets via the Gamma endpoint documented at
-        https://docs.polymarket.com/developers/gamma-markets-api/fetch-markets-guide.
+        """Fetch markets via Gamma `/markets` using the documented query parameters.
+
+        Every argument maps 1:1 to
+        https://docs.polymarket.com/api-reference/markets/list-markets :
+
+        limit:
+            Page size (integer >= 0, Gamma caps at 100). Defaults to 25.
+        offset:
+            Pagination offset (0-based).
+        order:
+            Field to sort by (e.g. `start_date`, `volume_num`).
+        ascending:
+            Boolean flag indicating sort direction (True for ascending).
+        id:
+            Sequence of numeric market identifiers to include.
+        slug:
+            Sequence of market slugs to include.
+        clob_token_ids:
+            Sequence of outcome token ids (CLOB token ids) to filter by.
+        condition_ids:
+            Sequence of condition ids associated with the markets.
+        market_maker_address:
+            Sequence of market maker addresses to filter by.
+        liquidity_num_min / liquidity_num_max:
+            Numeric bounds applied to market liquidity.
+        volume_num_min / volume_num_max:
+            Numeric bounds applied to traded volume.
+        start_date_min / start_date_max:
+            ISO-8601 strings bounding market start dates.
+        end_date_min / end_date_max:
+            ISO-8601 strings bounding market end dates.
+        tag_id:
+            Tag/category identifier (integer per Gamma docs).
+        related_tags:
+            When true, include markets from related tags.
+        cyom:
+            Filter for Create-Your-Own-Market entries.
+        uma_resolution_status:
+            UMA resolution status string filter.
+        game_id:
+            Sports game identifier.
+        sports_market_types:
+            Sequence describing sports market types (per docs).
+        rewards_min_size:
+            Minimum rewards size filter.
+        question_ids:
+            Sequence of Polymarket question ids.
+        include_tag:
+            Include tag metadata in the response when true.
+        closed:
+            Boolean flag to include closed markets; omit for the API default.
         """
 
-        params: Dict[str, Any] = {
-            "closed": str(closed).lower(),
-            "limit": limit,
-            "offset": offset,
-        }
-        if tag_id:
-            params["tag_id"] = tag_id
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+
+        def _add_param(key: str, value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, bool):
+                params[key] = str(value).lower()
+                return
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                items = [str(item) for item in value if item is not None and str(item) != ""]
+                if items:
+                    params[key] = ",".join(items)
+                return
+            params[key] = value
+
+        _add_param("order", order)
+        _add_param("ascending", ascending)
+        _add_param("id", id)
+        _add_param("slug", slug)
+        _add_param("clob_token_ids", clob_token_ids)
+        _add_param("condition_ids", condition_ids)
+        _add_param("market_maker_address", market_maker_address)
+        _add_param("liquidity_num_min", liquidity_num_min)
+        _add_param("liquidity_num_max", liquidity_num_max)
+        _add_param("volume_num_min", volume_num_min)
+        _add_param("volume_num_max", volume_num_max)
+        _add_param("start_date_min", start_date_min)
+        _add_param("start_date_max", start_date_max)
+        _add_param("end_date_min", end_date_min)
+        _add_param("end_date_max", end_date_max)
+        _add_param("tag_id", tag_id)
+        _add_param("related_tags", related_tags)
+        _add_param("cyom", cyom)
+        _add_param("uma_resolution_status", uma_resolution_status)
+        _add_param("game_id", game_id)
+        _add_param("sports_market_types", sports_market_types)
+        _add_param("rewards_min_size", rewards_min_size)
+        _add_param("question_ids", question_ids)
+        _add_param("include_tag", include_tag)
+        _add_param("closed", closed)
 
         if self._debug:
             LOGGER.debug("Fetching markets with params: %s", params)

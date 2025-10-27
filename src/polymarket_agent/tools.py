@@ -37,21 +37,113 @@ class CancelOrderInput(BaseModel):
 
 
 class ListMarketsInput(BaseModel):
-    tag_id: str | None = Field(
-        default=None,
-        description="Gamma tag identifier, e.g. 100381, per https://docs.polymarket.com/developers/gamma-markets-api/fetch-markets-guide.",
-    )
-    closed: bool = Field(
-        default=False,
-        description="Whether to include closed markets. Defaults to only active markets.",
-    )
-    limit: conint(ge=1, le=100) = Field(
+    limit: conint(ge=0, le=100) = Field(
         default=25,
-        description="Maximum number of markets per page (Gamma /markets `limit`).",
+        description="Page size (Gamma caps at 100). Mirrors the `limit` query parameter.",
     )
     offset: conint(ge=0, le=1000) = Field(
         default=0,
-        description="Pagination offset (Gamma /markets `offset`).",
+        description="Pagination offset (0-based) supplied via `offset`.",
+    )
+    order: str | None = Field(
+        default=None,
+        description="Field name used for sorting (e.g. `start_date`, `volume_num`).",
+    )
+    ascending: bool | None = Field(
+        default=None,
+        description="Set true for ascending order; false for descending.",
+    )
+    id: List[int] | None = Field(
+        default=None,
+        description="Restrict results to these numeric market ids.",
+    )
+    slug: List[str] | None = Field(
+        default=None,
+        description="Filter by one or more market slugs.",
+    )
+    clob_token_ids: List[str] | None = Field(
+        default=None,
+        description="Return markets containing any of these CLOB token ids.",
+    )
+    condition_ids: List[str] | None = Field(
+        default=None,
+        description="Filter using UMA condition ids associated with the markets.",
+    )
+    market_maker_address: List[str] | None = Field(
+        default=None,
+        description="Limit to markets created by these market maker addresses.",
+    )
+    liquidity_num_min: confloat(ge=0) | None = Field(
+        default=None,
+        description="Lower bound for reported market liquidity.",
+    )
+    liquidity_num_max: confloat(ge=0) | None = Field(
+        default=None,
+        description="Upper bound for reported market liquidity.",
+    )
+    volume_num_min: confloat(ge=0) | None = Field(
+        default=None,
+        description="Lower bound for traded volume.",
+    )
+    volume_num_max: confloat(ge=0) | None = Field(
+        default=None,
+        description="Upper bound for traded volume.",
+    )
+    start_date_min: str | None = Field(
+        default=None,
+        description="Earliest ISO-8601 start date to include (Gamma `start_date_min`).",
+    )
+    start_date_max: str | None = Field(
+        default=None,
+        description="Latest ISO-8601 start date to include.",
+    )
+    end_date_min: str | None = Field(
+        default=None,
+        description="Earliest ISO-8601 end date to include.",
+    )
+    end_date_max: str | None = Field(
+        default=None,
+        description="Latest ISO-8601 end date to include.",
+    )
+    tag_id: int | None = Field(
+        default=None,
+        description="Tag/category identifier documented in the Gamma API.",
+    )
+    related_tags: bool | None = Field(
+        default=None,
+        description="Include markets from related tags when true.",
+    )
+    cyom: bool | None = Field(
+        default=None,
+        description="Filter to Create-Your-Own-Market listings.",
+    )
+    uma_resolution_status: str | None = Field(
+        default=None,
+        description="Filter by UMA resolution status string.",
+    )
+    game_id: str | None = Field(
+        default=None,
+        description="Sports `game_id` filter as defined in the API.",
+    )
+    sports_market_types: List[str] | None = Field(
+        default=None,
+        description="Filter to specific sports market types (array of strings).",
+    )
+    rewards_min_size: confloat(ge=0) | None = Field(
+        default=None,
+        description="Minimum rewards size threshold.",
+    )
+    question_ids: List[str] | None = Field(
+        default=None,
+        description="Restrict to markets matching these question ids.",
+    )
+    include_tag: bool | None = Field(
+        default=None,
+        description="Include tag metadata alongside markets when true.",
+    )
+    closed: bool | None = Field(
+        default=None,
+        description="Include closed markets when true; omit for API default behaviour.",
     )
 
 
@@ -92,7 +184,7 @@ def build_polymarket_tools(client: PolymarketClient) -> List[StructuredTool]:
         StructuredTool.from_function(
             name="list_polymarket_markets",
             description=(
-                "Use to call the Gamma /markets endpoint (pagination, tag filters, closed flag)."
+                "Use to call the Gamma /markets endpoint with the documented filters (ids, tags, liquidity, dates, etc.)."
             ),
             func=_wrap(client, "list_markets"),
             args_schema=ListMarketsInput,

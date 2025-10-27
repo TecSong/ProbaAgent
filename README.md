@@ -7,6 +7,7 @@ LangChain agent that speaks natural language to the Polymarket CLOB API. The pro
 - **End-to-end workflow** – inspect open orders, list markets, fetch quotes, submit or cancel trades.
 - **Production-friendly API** – Flask server with CORS and history management at `/api/chat`.
 - **Modern UI** – Vite + React single-page app with optimistic updates and status feedback.
+- **Telegram bot** – optional Bot API bridge so users can chat from mobile/desktop Telegram clients.
 - **Configurable** – all credentials and runtime knobs live in `.env`.
 
 ## Prerequisites
@@ -69,6 +70,17 @@ The Vite dev server runs on `http://localhost:5173` and proxies `/api/*` to `htt
 
 Visit http://localhost:5173 to talk to the agent. Each message sends the accumulated history to `/api/chat`, which invokes the LangChain agent and returns the updated transcript plus the latest reply.
 
+## Telegram Bot
+
+1. **Set credentials** – add the following keys to `.env`:
+   - `TELEGRAM_BOT_TOKEN` – token obtained from @BotFather.
+   - `TELEGRAM_ALLOWED_USER_IDS` – optional comma-separated list of numeric user IDs allowed to chat with the bot. Leave blank to allow everyone.
+2. **Run the bot**
+   ```bash
+   python src/scripts/telegram_bot.py
+   ```
+   The process keeps a conversation history per chat ID and relays every incoming message to the LangChain agent. Use `/reset` to clear the history or `/help` for available commands.
+
 ## Project Structure
 
 - `polymarket_agent/client.py` – thin wrapper around `py-clob-client` + Gamma `/markets`.
@@ -76,6 +88,7 @@ Visit http://localhost:5173 to talk to the agent. Each message sends the accumul
 - `polymarket_agent/agent.py` – builds the agent via `langchain.agents.create_agent`.
 - `polymarket_agent/main.py` – simple CLI loop maintaining conversational history.
 - `src/server.py` – Flask service exposing `/health` and `/api/chat`.
+- `src/scripts/telegram_bot.py` – Telegram Bot API bridge with optional user allowlist.
 - `frontend/` – Vite + React SPA with a polished chat interface.
 
 ## Extending the Agent
