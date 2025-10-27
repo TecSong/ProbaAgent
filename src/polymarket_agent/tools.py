@@ -47,7 +47,7 @@ class ListMarketsInput(BaseModel):
     )
     order: str | None = Field(
         default=None,
-        description="Field name used for sorting (e.g. `start_date`, `volume_num`).",
+        description="Field name used for sorting (e.g. `start_date`, `volume`).",
     )
     ascending: bool | None = Field(
         default=None,
@@ -142,8 +142,8 @@ class ListMarketsInput(BaseModel):
         description="Include tag metadata alongside markets when true.",
     )
     closed: bool | None = Field(
-        default=None,
-        description="Include closed markets when true; omit for API default behaviour.",
+        default=False,
+        description="Include closed markets when true; false for API default behaviour.",
     )
 
 

@@ -8,7 +8,7 @@ from typing import Dict, List
 
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -70,7 +70,7 @@ def _build_application() -> Application:
             "Hi! I'm the Polymarket trading assistant. "
             "Send me natural-language questions like 'List my open orders' or 'Place a buy order at 0.42'."
         )
-        await update.message.reply_text(msg)
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         user_id = update.effective_user.id if update.effective_user else None
@@ -80,7 +80,7 @@ def _build_application() -> Application:
         chat_id = update.effective_chat.id if update.effective_chat else None
         if chat_id is not None:
             histories.pop(chat_id, None)
-        await update.message.reply_text("Conversation history cleared.")
+        await update.message.reply_text("Conversation history cleared.", parse_mode=ParseMode.MARKDOWN)
 
     async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         user_id = update.effective_user.id if update.effective_user else None
@@ -93,7 +93,7 @@ def _build_application() -> Application:
             "/reset – clear conversation history\n"
             "Otherwise, just send messages describing what you want to do on Polymarket."
         )
-        await update.message.reply_text(help_text)
+        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
@@ -114,7 +114,7 @@ def _build_application() -> Application:
 
         history = histories.setdefault(chat_id, [])
         await message.chat.send_action(action=ChatAction.TYPING)
-        msg = await update.message.reply_text("🤔 Thinking...")
+        msg = await update.message.reply_text("🤔 *Thinking...*", parse_mode=ParseMode.MARKDOWN)
 
         # response_iter = agent.stream_response(text) 
         # text = ""
@@ -125,14 +125,15 @@ def _build_application() -> Application:
             result = run_agent_loop(agent, text, history)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Agent invocation failed")
-            await message.reply_text(
-                "Something went wrong while contacting Polymarket. Please try again later."
+            await msg.edit_text(
+                "_Error:_ Something went wrong while contacting Polymarket. Please try again later.",
+                parse_mode=ParseMode.MARKDOWN,
             )
             return
 
         reply = result.get("output") or "(No response)"
         update_history(history, text, reply)
-        await msg.edit_text(reply)
+        await msg.edit_text(reply, parse_mode=ParseMode.MARKDOWN)
 
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))

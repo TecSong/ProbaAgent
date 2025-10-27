@@ -11,7 +11,7 @@ from .tools import build_polymarket_tools
 
 # Mirrors https://docs.langchain.com/oss/python/langchain/agents guidance.
 SYSTEM_INSTRUCTIONS = (
-    "You are a Polymarket trading assistant. "
+    "You are a Polymarket assistant. "
     "Reason about the user's intent, call tools when necessary, and report order ids, "
     "prices, and statuses in plain language."
 )

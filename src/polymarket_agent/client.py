@@ -108,7 +108,7 @@ class PolymarketClient:
         rewards_min_size: Optional[float] = None,
         question_ids: Optional[Sequence[str]] = None,
         include_tag: Optional[bool] = None,
-        closed: Optional[bool] = None,
+        closed: Optional[bool] = False,
     ) -> Dict[str, Any]:
         """Fetch markets via Gamma `/markets` using the documented query parameters.
 
@@ -120,7 +120,7 @@ class PolymarketClient:
         offset:
             Pagination offset (0-based).
         order:
-            Field to sort by (e.g. `start_date`, `volume_num`).
+            Field to sort by (e.g. `start_date`, `volume`).
         ascending:
             Boolean flag indicating sort direction (True for ascending).
         id:
@@ -160,7 +160,7 @@ class PolymarketClient:
         include_tag:
             Include tag metadata in the response when true.
         closed:
-            Boolean flag to include closed markets; omit for the API default.
+            Boolean flag to include closed markets; false for the API default.
         """
 
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
