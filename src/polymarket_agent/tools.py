@@ -161,6 +161,17 @@ class GetMarketDetailInput(BaseModel):
     )
 
 
+class SearchMarketsInput(BaseModel):
+    query: str = Field(
+        ...,
+        description="Free-form text used to search Gamma markets, events, and profiles.",
+    )
+    cache: bool | None = Field(
+        default=None,
+        description="When false, bypass the Gamma search cache (per API docs).",
+    )
+
+
 def _wrap(client: PolymarketClient, method_name: str) -> Callable:
     method = getattr(client, method_name)
 
@@ -172,6 +183,14 @@ def _wrap(client: PolymarketClient, method_name: str) -> Callable:
 
 def build_polymarket_tools(client: PolymarketClient) -> List[StructuredTool]:
     return [
+        StructuredTool.from_function(
+            name="search_polymarket_catalog",
+            description=(
+                "Use to quickly search Polymarket markets, events, or trader profiles via the Gamma /search endpoint."
+            ),
+            func=_wrap(client, "search_markets_events_profiles"),
+            args_schema=SearchMarketsInput,
+        ),
         StructuredTool.from_function(
             name="list_polymarket_orders",
             description=(

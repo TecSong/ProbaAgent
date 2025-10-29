@@ -208,6 +208,27 @@ class PolymarketClient:
             LOGGER.debug("Fetching markets with params: %s", params)
         return self._gamma_request("GET", "/markets", params=params)
 
+    def search_markets_events_profiles(
+        self,
+        query: str,
+        cache: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Search Polymarket markets, events, and profiles via the Gamma `/search` endpoint."""
+
+        cleaned = query.strip()
+        if not cleaned:
+            raise PolymarketClientError("query must be a non-empty string")
+
+        params: Dict[str, Any] = {"q": cleaned}
+
+        if cache is not None:
+            params["cache"] = "true" if cache else "false"
+
+        if self._debug:
+            LOGGER.debug("Gamma search params: %s", params)
+
+        return self._gamma_request("GET", "/public-search", params=params)
+
     def get_market_detail(self, market_id: str) -> Dict[str, Any]:
         """
         Fetch full metadata for a market ID per
