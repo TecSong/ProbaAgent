@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import pytest
 from typing import Any, Dict, List
 
 os.environ.setdefault("POLYMARKET_ALLOW_TELEGRAM_STUBS", "1")
 
-from scripts.telegram_bot import _collect_market_snapshot
+from polymarket_agent.telegram.snapshot import NoRelevantMarketError, collect_market_snapshot
 
 
 class _StubClient:
@@ -56,7 +57,7 @@ def test_collect_market_snapshot_from_event_markets() -> None:
 
     client = _StubClient(payload, detail_map)
 
-    snapshot = _collect_market_snapshot(client, "  bitcoin  ")
+    snapshot = collect_market_snapshot(client, "  bitcoin  ")
 
     assert snapshot is not None
     assert "Market ID: 618949" in snapshot
@@ -104,9 +105,28 @@ def test_collect_market_snapshot_deduplicates_event_results() -> None:
 
     client = _StubClient(payload, detail_map)
 
-    snapshot = _collect_market_snapshot(client, "election")
+    snapshot = collect_market_snapshot(client, "election")
 
     assert snapshot is not None
     assert "Market ID: 12345" in snapshot
     assert len(client.detail_calls) == 1
     assert client.price_calls == []
+
+
+def test_collect_market_snapshot_filters_irrelevant_events() -> None:
+    payload = {
+        "events": [
+            {
+                "title": "Weather in Paris",
+                "markets": [
+                    {"id": "777"},
+                ],
+            }
+        ]
+    }
+    client = _StubClient(payload, detail_map={})
+
+    with pytest.raises(NoRelevantMarketError):
+        collect_market_snapshot(client, "bitcoin price")
+
+    assert client.detail_calls == []
