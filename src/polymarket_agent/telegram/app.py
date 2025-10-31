@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from polymarket_agent.agent import build_polymarket_agent, run_agent_loop, update_history
 from polymarket_agent.client import PolymarketClientError
 from polymarket_agent.main import build_client_from_env
+from polymarket_agent.prompt import MAX_RESULTS
 
 from .dependencies import (
     Application,
@@ -64,8 +65,9 @@ def build_application() -> Application:
     agent = build_polymarket_agent(client)
     histories: Dict[int, List[Dict[str, str]]] = {}
     search_sessions: Dict[int, Dict[str, Any]] = {}
+    insight_sessions: Dict[int, Dict[str, Any]] = {}
 
-    def _generate_market_insight(query: str, max_results: int = 6) -> str:
+    def _generate_market_insight(query: str, max_results: int = MAX_RESULTS) -> str:
         return generate_market_insight(client, query, max_results=max_results)
 
     def _is_authorized(user_id: int | None) -> bool:
@@ -211,16 +213,16 @@ def build_application() -> Application:
                     market_slug = market.get("slug") or ""
                     market_url = f"https://polymarket.com/market/{market_slug}" if market_slug else None
                     if market_url:
-                        lines.append(f"      • [{market_title}]({market_url})")
+                        lines.append(f"      • Market: [{market_title}]({market_url})")
                     else:
-                        lines.append(f"      • {market_title}")
+                        lines.append(f"      • Market: {market_title}")
 
             lines.append("")
 
             key = str(idx)
             event_map[key] = raw_title_str
             keyboard_rows.append(
-                [InlineKeyboardButton(f"insight #{idx}", callback_data=f"insight:{key}")]
+                [InlineKeyboardButton(f"make insights for #{idx}", callback_data=f"insight:{key}")]
             )
 
         chat_id = message.chat_id if message.chat else None
@@ -308,15 +310,19 @@ def build_application() -> Application:
 
         query = " ".join(context.args).strip() if context.args else ""
         if not query:
-            await message.reply_text(
-                "Usage: /insight <event title or market id>",
+            prompt = await message.reply_text(
+                "🧠 *Insight Help*\nReply with an event or market to generate an AI insight.",
                 parse_mode=ParseMode.MARKDOWN,
+                reply_markup=ForceReply(selective=True, input_field_placeholder="eg: Trump"),
             )
+            chat_id = update.effective_chat.id if update.effective_chat else None
+            if chat_id is not None:
+                insight_sessions[chat_id] = {"prompt_id": prompt.message_id}
             return
 
         await message.chat.send_action(action=ChatAction.TYPING)
         thinking_msg = await message.reply_text(
-            "🧠 *Analyzing recent intel...*",
+            "🧠 *Analyzing...*",
             parse_mode=ParseMode.MARKDOWN,
         )
 
@@ -352,7 +358,7 @@ def build_application() -> Application:
             prompt = await message.reply_text(
                 "🧭 *Search Help*\nReply with keywords to search Polymarket markets and events.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=ForceReply(selective=True, input_field_placeholder="例如：US election"),
+                reply_markup=ForceReply(selective=True, input_field_placeholder="eg: Trump"),
             )
             search_sessions[update.effective_chat.id] = {"prompt_id": prompt.message_id}
             return
@@ -375,6 +381,25 @@ def build_application() -> Application:
         chat_id = update.effective_chat.id if update.effective_chat else None
         if chat_id is None:
             return
+
+        insight_session = insight_sessions.get(chat_id)
+        if insight_session and message.reply_to_message:
+            prompt_id = insight_session.get("prompt_id")
+            if prompt_id and message.reply_to_message.message_id == prompt_id:
+                insight_sessions.pop(chat_id, None)
+                if not text:
+                    await message.reply_text(
+                        "Please provide an event or market to analyze.",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
+                original_args = getattr(context, "args", None)
+                context.args = text.split()
+                try:
+                    await insight(update, context)
+                finally:
+                    context.args = original_args
+                return
 
         session = search_sessions.get(chat_id)
         if session and message.reply_to_message:
