@@ -38,8 +38,8 @@ SYSTEM_PROMPT = {
     ),
     "instructions": (
         "You are the Polymarket Master Trader Insight Agent (Data-Aware). Your role is to "
-        "analyze the provided Polymarket data inputs and web search results(at most {MAX_RESULTS} items) to generate "
-        "insightful, actionable trading advice. Use your advanced reasoning capabilities to "
+        "analyze the provided Polymarket data inputs and web search tool results(at most {MAX_RESULTS} items) "
+        "to generate insightful, actionable trading advice. Use your advanced reasoning capabilities to "
         "interpret trends, identify market signals, and assess risks. Incorporate relevant "
         "information from credible web sources to provide market context. Present your findings "
         "in a structured Markdown format with clear sections labeled Summary:, Key Insights:, "

@@ -4,9 +4,18 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 import logging
+from py_order_utils.model import POLY_GNOSIS_SAFE
+from py_order_utils.model.signatures import EOA
 import requests
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OpenOrderParams, OrderArgs, OrderType
+from py_clob_client.clob_types import (
+    AssetType,
+    BalanceAllowanceParams,
+    OpenOrderParams,
+    OrderArgs,
+    OrderType,
+    PartialCreateOrderOptions,
+)
 from py_clob_client.order_builder.constants import BUY, SELL
 
 
@@ -36,7 +45,7 @@ class PolymarketClientConfig:
     host: str
     private_key: str
     chain_id: int = 137
-    signature_type: int = 0
+    signature_type: int = 1
     funder: Optional[str] = None
     gamma_base: str = "https://gamma-api.polymarket.com"
     timeout: int = 15
@@ -53,12 +62,16 @@ class PolymarketClient:
 
     def __init__(self, config: PolymarketClientConfig) -> None:
         self.config = config
+        ClobClientDict = {
+            "host": config.host,
+            "key": config.private_key,
+            "chain_id": config.chain_id,
+            "signature_type": config.signature_type
+        }
+        if config.funder:
+            ClobClientDict["funder"] = config.funder
         self._client = ClobClient(
-            config.host,
-            key=config.private_key,
-            chain_id=config.chain_id,
-            funder=config.funder,
-            signature_type=1
+            **ClobClientDict
         )
         # Create API creds if needed (per py-clob-client README).
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
@@ -275,8 +288,8 @@ class PolymarketClient:
                 size,
                 price
             )
-
-        signed_order = self._client.create_order(order_args)
+        options = PartialCreateOrderOptions(neg_risk=True)
+        signed_order = self._client.create_order(order_args, options=options)
         print("signed_order", signed_order)
         try:
             response = self._client.post_order(signed_order)
@@ -330,6 +343,30 @@ class PolymarketClient:
             raise PolymarketClientError(
                 f"Unsupported order_type '{order_type}'. Options: {', '.join(mapping)}."
             ) from exc
+
+    def update_balance_allowance(self, token_id: str) -> Dict[str, Any]:
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL
+        )
+        try:
+            self._client.update_balance_allowance(params)
+            # YES
+            self._client.update_balance_allowance(
+                params=BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                )
+            )
+
+            # NO
+            self._client.update_balance_allowance(
+                params=BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception(f"Failed to update balance allowance for token {token_id}: {exc}")
 
     def _gamma_request(
         self, method: str, path: str, params: Optional[Dict[str, Any]] = None
