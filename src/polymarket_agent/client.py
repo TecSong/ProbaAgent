@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_CEILING
 from typing import Any, Dict, List, Optional, Sequence
 
 import logging
@@ -24,6 +25,7 @@ from .constant import (
     POLYMARKET_APPROVAL_SPENDERS,
     POLYMARKET_CTF_ADDRESS,
     POLYMARKET_USDC_ADDRESS,
+    USDC_DECIMALS,
 )
 from .test.approve_abi import erc1155_set_approval, erc20_approve
 
@@ -88,6 +90,10 @@ class PolymarketClient:
         self._client = ClobClient(
             **ClobClientDict
         )
+        try:
+            self._wallet_address = Web3.to_checksum_address(self._client.get_address())
+        except Exception:  # noqa: BLE001 - fallback to derived address
+            self._wallet_address = ""
         # Create API creds if needed (per py-clob-client README).
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
         self._gamma = requests.Session()
@@ -99,6 +105,99 @@ class PolymarketClient:
         if self._debug:
             _ensure_logger()
             LOGGER.setLevel(logging.DEBUG)
+
+    @property
+    def wallet_address(self) -> str:
+        if self._wallet_address:
+            return self._wallet_address
+        try:
+            self._wallet_address = Web3.to_checksum_address(self._client.get_address())
+        except Exception as exc:  # noqa: BLE001
+            raise PolymarketClientError("Unable to determine wallet address.") from exc
+        return self._wallet_address
+
+    def _format_usdc(self, amount: int) -> str:
+        scaled = Decimal(amount) / (Decimal(10) ** USDC_DECIMALS)
+        text = f"{scaled:.6f}".rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _calculate_required_collateral(
+        self, normalized_side: str, size: float, price: float
+    ) -> int:
+        dec_size = Decimal(str(size))
+        dec_price = Decimal(str(price))
+        if dec_size <= 0:
+            return 0
+        if dec_price < 0 or dec_price > 1:
+            raise PolymarketClientError("price must be between 0 and 1.")
+
+        if normalized_side == BUY:
+            required = dec_size * dec_price
+        elif normalized_side == SELL:
+            required = dec_size * (Decimal("1") - dec_price)
+        else:  # pragma: no cover - guard for unexpected sides
+            raise PolymarketClientError(f"Unsupported side '{normalized_side}'.")
+
+        if required <= 0:
+            return 0
+
+        base_units = (required * (Decimal(10) ** USDC_DECIMALS)).quantize(
+            Decimal("1"), rounding=ROUND_CEILING
+        )
+        return int(base_units)
+
+    def _allowance_insufficient(
+        self, allowances: Dict[str, int], required: int
+    ) -> List[str]:
+        missing: List[str] = []
+        for spender in POLYMARKET_APPROVAL_SPENDERS:
+            checksum = Web3.to_checksum_address(spender)
+            allowance = allowances.get(checksum, 0)
+            if allowance < required:
+                missing.append(checksum)
+        return missing
+
+    def _ensure_balance_and_allowance(self, required_collateral: int) -> None:
+        balance_info = self.check_balance_and_allowance(
+            signature_type=self.config.signature_type
+        )
+
+        if balance_info.balance < required_collateral:
+            needed = self._format_usdc(required_collateral)
+            available = self._format_usdc(balance_info.balance)
+            try:
+                wallet_addr = self.wallet_address
+            except PolymarketClientError:
+                wallet_addr = "your trading wallet"
+            raise PolymarketClientError(
+                "Insufficient collateral to place the order. "
+                f"Required ≈ {needed} USDC, available ≈ {available} USDC. "
+                f"Please deposit USDC (token contract {POLYMARKET_USDC_ADDRESS}) to wallet {wallet_addr}."
+            )
+
+        missing_allowances = self._allowance_insufficient(
+            balance_info.allowances, required_collateral or 1
+        )
+        if not missing_allowances:
+            return
+
+        if self._debug:
+            LOGGER.debug(
+                "Missing allowances detected for spenders: %s", missing_allowances
+            )
+        self.initialize_wallet_approvals()
+        refreshed = self.check_balance_and_allowance(
+            signature_type=self.config.signature_type
+        )
+        missing_after_refresh = self._allowance_insufficient(
+            refreshed.allowances, required_collateral or 1
+        )
+        if missing_after_refresh:
+            joined = ", ".join(missing_after_refresh)
+            raise PolymarketClientError(
+                f"Allowance initialization failed for spenders: {joined}. "
+                "Please retry once the transactions confirm."
+            )
 
     # Public API -----------------------------------------------------------------
 
@@ -289,11 +388,17 @@ class PolymarketClient:
         size: float,
         price: float
     ) -> Dict[str, Any]:
+        normalized_side = self._coerce_side(side)
+        required_collateral = self._calculate_required_collateral(
+            normalized_side, size, price
+        )
+        self._ensure_balance_and_allowance(required_collateral)
+
         order_args = OrderArgs(
             token_id=token_id,
             price=price,
             size=size,
-            side=self._coerce_side(side)
+            side=normalized_side
         )
         if self._debug:
             LOGGER.debug(

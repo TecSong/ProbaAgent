@@ -22,3 +22,8 @@ POLYMARKET_APPROVAL_SPENDERS = (
 
 # Maximum allowance used when approving ERC-20 spenders.
 MAX_APPROVAL_AMOUNT = (1 << 256) - 1
+
+# Token configuration ---------------------------------------------------------
+
+# Number of decimals used by the collateral token (USDC on Polygon).
+USDC_DECIMALS = 6
