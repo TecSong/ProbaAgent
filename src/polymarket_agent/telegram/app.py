@@ -507,6 +507,23 @@ def build_application() -> Application:
         if chat_id is None:
             return
 
+        info = _extract_telegram_user_info(update)
+        if info is None:
+            await message.reply_text(
+                "_Error:_ Unable to identify your Telegram user.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            user_service.ensure_telegram_user(info)
+        except UserServiceError:
+            LOGGER.exception("Ensuring Telegram user %s failed", user_id)
+            await message.reply_text(
+                "_Error:_ Wallet service is temporarily unavailable.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
         insight_session = insight_sessions.get(chat_id)
         if insight_session and message.reply_to_message:
             prompt_id = insight_session.get("prompt_id")
