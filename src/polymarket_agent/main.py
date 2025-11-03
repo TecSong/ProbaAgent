@@ -26,6 +26,7 @@ def build_client_from_env() -> PolymarketClient:
     signature_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
     funder = os.getenv("POLYMARKET_FUNDER")
     gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
+    data_api_base = os.getenv("POLYMARKET_DATA_API_BASE", "https://data-api.polymarket.com")
     debug = _env_flag("POLYMARKET_DEBUG")
 
     if not private_key:
@@ -38,6 +39,7 @@ def build_client_from_env() -> PolymarketClient:
         signature_type=signature_type,
         funder=funder,
         gamma_base=gamma_base,
+        data_api_base=data_api_base,
         debug=debug,
     )
     return PolymarketClient(cfg)

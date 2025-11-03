@@ -21,7 +21,6 @@ class UserRecord:
     platform: str
     platform_user_id: str
     wallet_address: str
-    wallet_private_key: str
     raw: Dict[str, Any]
 
 
@@ -102,8 +101,7 @@ class UserService:
 
     def _normalize(self, data: Dict[str, Any]) -> UserRecord:
         wallet_address = str(data.get("wallet_address", "")).strip()
-        wallet_private_key = str(data.get("wallet_private_key", "")).strip()
-        if not wallet_address or not wallet_private_key:
+        if not wallet_address:
             raise UserServiceError(
                 "User record is missing wallet credentials in Supabase."
             )
@@ -114,8 +112,7 @@ class UserService:
             platform=platform,
             platform_user_id=platform_user_id,
             wallet_address=wallet_address,
-            wallet_private_key=wallet_private_key,
-            raw=data,
+            raw=data
         )
 
 

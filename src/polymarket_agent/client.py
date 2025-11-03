@@ -59,6 +59,7 @@ class PolymarketClientConfig:
     signature_type: int = 1
     funder: Optional[str] = None
     gamma_base: str = "https://gamma-api.polymarket.com"
+    data_api_base: str = "https://data-api.polymarket.com"
     timeout: int = 15
     debug: bool = False
 
@@ -98,6 +99,8 @@ class PolymarketClient:
         self._client.set_api_creds(self._client.create_or_derive_api_creds())
         self._gamma = requests.Session()
         self._gamma.headers.update({"Accept": "application/json"})
+        self._data_api = requests.Session()
+        self._data_api.headers.update({"Accept": "application/json"})
         self._clob_http = requests.Session()
         self._clob_http.headers.update({"Accept": "application/json"})
         self._timeout = config.timeout
@@ -380,6 +383,20 @@ class PolymarketClient:
             "/price",
             params={"token_id": token_id, "side": normalized},
         )
+
+    def list_positions(self, wallet_address: str) -> List[Dict[str, Any]]:
+        """
+        Fetch current Polymarket positions for a wallet via the public data API.
+        """
+
+        address = wallet_address.strip()
+        if not address:
+            raise PolymarketClientError("wallet_address must be a non-empty string.")
+
+        payload = self._data_api_request("GET", "/positions", params={"user": address})
+        if isinstance(payload, list):
+            return payload
+        raise PolymarketClientError("Malformed positions response from Polymarket data API.")
 
     def create_order(
         self,
@@ -700,3 +717,17 @@ class PolymarketClient:
             return response.json()
         except ValueError as exc:
             raise PolymarketClientError("Malformed CLOB API response") from exc
+
+    def _data_api_request(
+        self, method: str, path: str, params: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        url = f"{self.config.data_api_base.rstrip('/')}{path}"
+        response = self._data_api.request(method, url, params=params, timeout=self._timeout)
+        if not response.ok:
+            raise PolymarketClientError(
+                f"Data API error ({response.status_code}): {response.text}"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise PolymarketClientError("Malformed data API response") from exc

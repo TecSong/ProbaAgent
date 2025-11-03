@@ -152,6 +152,36 @@ def build_application() -> Application:
             return text
         return text[: max(limit - 1, 0)] + "…"
 
+    def _format_decimal(value: Any, precision: int = 3) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if abs(number) < 10 ** (-precision):
+            return "0"
+        text = f"{number:.{precision}f}".rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _format_signed_decimal(value: Any, precision: int = 3) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if abs(number) < 10 ** (-precision):
+            return "0"
+        text = f"{number:+.{precision}f}".rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _format_signed_percent(value: Any, precision: int = 2) -> str:
+        try:
+            percent = float(value) * 100
+        except (TypeError, ValueError):
+            return "-"
+        if abs(percent) < 10 ** (-precision):
+            return "0%"
+        text = f"{percent:+.{precision}f}".rstrip("0").rstrip(".")
+        return f"{text}%" if text else "0%"
+
     async def _send_search_results(message: Message, query: str) -> None:
         await message.chat.send_action(action=ChatAction.TYPING)
 
@@ -330,6 +360,7 @@ def build_application() -> Application:
             "/start – brief intro\n"
             "/reset – clear conversation history\n"
             "/wallet – view your wallet address and balances\n"
+            "/positions – list your current Polymarket positions\n"
             "/insight <market or event title> – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
             "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
@@ -396,6 +427,125 @@ def build_application() -> Application:
 
         await message.reply_text(
             "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+        )
+
+    async def positions(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
+        message = update.message
+        if message is None:
+            return
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_authorized(user_id):
+            await _reject(update)
+            return
+
+        info = _extract_telegram_user_info(update)
+        if info is None:
+            await message.reply_text(
+                "_Error:_ Unable to identify your Telegram user.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            record = user_service.ensure_telegram_user(info)
+        except UserServiceError:
+            LOGGER.exception("Ensuring Telegram user %s failed", user_id)
+            await message.reply_text(
+                "_Error:_ Wallet service is temporarily unavailable.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        await message.chat.send_action(action=ChatAction.TYPING)
+        try:
+            positions_data = client.list_positions(record.wallet_address)
+        except PolymarketClientError as exc:
+            LOGGER.exception(
+                "Positions fetch failed for wallet %s: %s",
+                record.wallet_address,
+                exc,
+            )
+            await message.reply_text(
+                "_Error:_ Unable to fetch Polymarket positions.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if not positions_data:
+            await message.reply_text(
+                "📊 *Positions*\n\n_No open positions found for your wallet._",
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True,
+            )
+            return
+
+        limit = 5
+        lines = [
+            "📊 *Positions*",
+            "",
+            f"Wallet: `{record.wallet_address}`",
+            "",
+        ]
+
+        for idx, position in enumerate(positions_data[:limit], start=1):
+            title_raw = (
+                position.get("title")
+                or position.get("eventSlug")
+                or position.get("slug")
+                or position.get("asset")
+                or "Untitled position"
+            )
+            title = _sanitize(str(title_raw))
+            outcome_raw = position.get("outcome")
+            outcome = _sanitize(str(outcome_raw)) if outcome_raw else ""
+            header = f"{idx}. *{title}*"
+            if outcome:
+                header += f" ({outcome})"
+            lines.append(header)
+
+            size = _format_decimal(position.get("size"), precision=3)
+            avg_price = _format_decimal(position.get("avgPrice"), precision=3)
+            current_price = _format_decimal(position.get("curPrice"), precision=3)
+
+            trade_parts: List[str] = []
+            if size != "-":
+                trade_parts.append(f"Size {size}")
+            if avg_price != "-":
+                trade_parts.append(f"avg {avg_price}")
+            if current_price != "-":
+                trade_parts.append(f"last {current_price}")
+            if trade_parts:
+                lines.append("   " + " • ".join(trade_parts))
+
+            current_value = _format_decimal(position.get("currentValue"), precision=3)
+            pnl_cash = _format_signed_decimal(position.get("cashPnl"), precision=3)
+            pnl_percent = _format_signed_percent(position.get("percentPnl"), precision=2)
+
+            metrics_parts: List[str] = []
+            if current_value != "-":
+                metrics_parts.append(f"value {current_value} USDC")
+            pnl_components: List[str] = []
+            if pnl_cash != "-":
+                pnl_components.append(f"{pnl_cash} USDC")
+            if pnl_percent != "-":
+                pnl_components.append(pnl_percent)
+            if pnl_components:
+                metrics_parts.append("PnL " + " ".join(pnl_components))
+            if metrics_parts:
+                lines.append("   " + " | ".join(metrics_parts))
+
+            slug = position.get("slug")
+            if slug:
+                lines.append(f"   🔗 <https://polymarket.com/market/{slug}>")
+            lines.append("")
+
+        total_positions = len(positions_data)
+        if total_positions > limit:
+            lines.append(f"_Showing {limit} of {total_positions} positions._")
+
+        await message.reply_text(
+            "\n".join(lines).strip(),
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True,
         )
@@ -590,6 +740,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(CommandHandler("wallet", wallet))
+    application.add_handler(CommandHandler("positions", positions))
     application.add_handler(CommandHandler("insight", insight))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
