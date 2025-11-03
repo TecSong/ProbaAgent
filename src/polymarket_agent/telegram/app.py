@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
@@ -429,7 +430,66 @@ def build_application() -> Application:
             "\n".join(lines),
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "💳 Fund",
+                            callback_data=f"wallet:qr:{record.wallet_address}",
+                        )
+                    ]
+                ]
+            ),
         )
+
+    async def wallet_qr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
+        query = update.callback_query
+        if query is None:
+            return
+
+        user_id = query.from_user.id if query.from_user else None
+        if not _is_authorized(user_id):
+            await query.answer("Not authorized", show_alert=True)
+            return
+
+        data = query.data or ""
+        parts = data.split(":", 2)
+        if len(parts) != 3 or parts[0] != "wallet" or parts[1] != "qr":
+            await query.answer("Invalid request", show_alert=True)
+            return
+
+        address = parts[2].strip()
+        if not address:
+            await query.answer("Missing wallet address", show_alert=True)
+            return
+
+        message_obj = query.message
+        if message_obj is None:
+            await query.answer("Missing chat context", show_alert=True)
+            return
+
+        await query.answer()
+
+        qr_url = (
+            "https://quickchart.io/qr?"
+            f"text={quote_plus(address)}&margin=1&size=300"
+        )
+        caption = (
+            f"wallet: `{address}`"
+        )
+
+        try:
+            await message_obj.reply_photo(
+                qr_url,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Failed to send deposit QR for %s: %s", address, exc)
+            await message_obj.reply_text(
+                "_Error:_ Unable to generate QR code right now.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
 
     async def positions(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
@@ -744,6 +804,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("insight", insight))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
+    application.add_handler(CallbackQueryHandler(wallet_qr_callback, pattern=r"^wallet:qr:"))
     application.add_handler(CallbackQueryHandler(event_insight_callback, pattern=r"^insight:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     return application
