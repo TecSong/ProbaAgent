@@ -12,6 +12,13 @@ from polymarket_agent.agent import build_polymarket_agent, run_agent_loop, updat
 from polymarket_agent.client import PolymarketClientError
 from polymarket_agent.main import build_client_from_env
 from polymarket_agent.prompt import MAX_RESULTS
+from polymarket_agent.user import (
+    TelegramUserInfo,
+    UserService,
+    UserServiceError,
+    WalletBalanceError,
+    get_wallet_balances,
+)
 
 from .dependencies import (
     Application,
@@ -67,6 +74,10 @@ def build_application() -> Application:
     allowed_ids = _parse_allowed_ids(os.getenv("TELEGRAM_ALLOWED_USER_IDS"))
     client = build_client_from_env()
     agent = build_polymarket_agent(client)
+    try:
+        user_service = UserService.from_env()
+    except UserServiceError as exc:
+        raise SystemExit(f"Unable to initialize Supabase user service: {exc}") from exc
     histories: Dict[int, List[Dict[str, str]]] = {}
     search_sessions: Dict[int, Dict[str, Any]] = {}
     insight_sessions: Dict[int, Dict[str, Any]] = {}
@@ -85,11 +96,32 @@ def build_application() -> Application:
         if update.effective_message:
             await update.effective_message.reply_text("You are not authorized to use this bot.")
 
+    def _extract_telegram_user_info(update: Update) -> TelegramUserInfo | None:
+        user = update.effective_user
+        if not user:
+            return None
+        return TelegramUserInfo(
+            telegram_id=user.id,
+            username=getattr(user, "username", None),
+            first_name=getattr(user, "first_name", None),
+            last_name=getattr(user, "last_name", None),
+        )
+
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         user_id = update.effective_user.id if update.effective_user else None
         if not _is_authorized(user_id):
             await _reject(update)
             return
+        info = _extract_telegram_user_info(update)
+        if info is not None:
+            try:
+                user_service.ensure_telegram_user(info)
+            except UserServiceError as exc:
+                LOGGER.warning(
+                    "Unable to prepare wallet for Telegram user %s: %s",
+                    info.telegram_id,
+                    exc,
+                )
         msg = (
             "Hi! I'm the Polymarket trading assistant. "
             "Ask for trade actions in natural language, or use /insight <market or event> for fresh AI intel."
@@ -297,12 +329,76 @@ def build_application() -> Application:
             "Commands:\n"
             "/start – brief intro\n"
             "/reset – clear conversation history\n"
+            "/wallet – view your wallet address and balances\n"
             "/insight <market or event title> – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
             "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
             "Otherwise, just send messages describing what you want to do on Polymarket."
         )
         await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+    async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
+        message = update.message
+        if message is None:
+            return
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_authorized(user_id):
+            await _reject(update)
+            return
+        info = _extract_telegram_user_info(update)
+        if info is None:
+            await message.reply_text(
+                "_Error:_ Unable to identify your Telegram user.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        try:
+            record = user_service.ensure_telegram_user(info)
+        except UserServiceError:
+            LOGGER.exception("Fetching wallet for user %s failed", info.telegram_id)
+            await message.reply_text(
+                "_Error:_ Wallet service is temporarily unavailable.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        try:
+            balances = get_wallet_balances(record.wallet_address)
+        except WalletBalanceError as exc:
+            LOGGER.warning(
+                "Balance fetch failed for wallet %s: %s",
+                record.wallet_address,
+                exc,
+            )
+            balances = None
+
+        lines = [
+            "💼 *Wallet information*",
+            "",
+            f"Address: `{record.wallet_address}`",
+        ]
+
+        if balances is not None:
+            lines.extend(
+                [
+                    "",
+                    f"*USDC.e balance:* {balances.format_usdc()}",
+                    f"*POL balance:* {balances.format_pol()}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "_Balances temporarily unavailable._",
+                ]
+            )
+
+        await message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+        )
 
     async def insight(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
@@ -476,6 +572,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("reset", reset))
+    application.add_handler(CommandHandler("wallet", wallet))
     application.add_handler(CommandHandler("insight", insight))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))

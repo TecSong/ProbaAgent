@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import logging
 import os
 from typing import Any, Dict, List
@@ -72,7 +73,9 @@ def generate_market_insight(client: Any, query: str, max_results: int = 6) -> st
     if not output_text:
         raise RuntimeError("OpenAI insight response was empty.")
 
-    return output_text.strip()
+    normalized = output_text.strip()
+    normalized = re.sub(r"(?m)^(?P<indent>\s*)-\s+", r"\g<indent>• ", normalized)
+    return normalized
 
 
 __all__ = ["generate_market_insight", "NoRelevantMarketError"]

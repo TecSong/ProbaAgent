@@ -9,3 +9,5 @@ Flask>=3.0.0
 flask-cors>=4.0.0
 python-telegram-bot>=21.0
 openai>=1.46.0
+web3>=7.14.0
+supabase>=2.4.0
