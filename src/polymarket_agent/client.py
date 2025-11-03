@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 import logging
-from py_order_utils.model import POLY_GNOSIS_SAFE
-from py_order_utils.model.signatures import EOA
 import requests
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
@@ -17,6 +15,17 @@ from py_clob_client.clob_types import (
     PartialCreateOrderOptions,
 )
 from py_clob_client.order_builder.constants import BUY, SELL
+from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
+
+from .constant import (
+    MAX_APPROVAL_AMOUNT,
+    POLYGON_RPC_URL,
+    POLYMARKET_APPROVAL_SPENDERS,
+    POLYMARKET_CTF_ADDRESS,
+    POLYMARKET_USDC_ADDRESS,
+)
+from .test.approve_abi import erc1155_set_approval, erc20_approve
 
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +59,12 @@ class PolymarketClientConfig:
     gamma_base: str = "https://gamma-api.polymarket.com"
     timeout: int = 15
     debug: bool = False
+
+
+@dataclass(frozen=True)
+class BalanceAllowanceResult:
+    balance: int
+    allowances: Dict[str, int]
 
 
 class PolymarketClient:
@@ -317,6 +332,185 @@ class PolymarketClient:
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         return self._client.cancel(order_id)
+
+    def check_balance_and_allowance(
+        self,
+        asset_type: AssetType = AssetType.COLLATERAL,
+        token_id: Optional[str] = None,
+        signature_type: int = -1,
+    ) -> BalanceAllowanceResult:
+        """
+        Fetch wallet balances and allowances from the CLOB API.
+
+        Mirrors the ad-hoc helper in ``test_update_balance_allowance`` while providing
+        guardrails and a reusable interface for the agent runtime.
+        """
+
+        params_kwargs: Dict[str, Any] = {
+            "asset_type": asset_type,
+            "signature_type": signature_type,
+        }
+
+        if asset_type == AssetType.CONDITIONAL:
+            if not token_id:
+                raise PolymarketClientError(
+                    "token_id is required when checking CONDITIONAL asset allowances."
+                )
+            params_kwargs["token_id"] = token_id
+        elif token_id:
+            raise PolymarketClientError(
+                "token_id is only supported with AssetType.CONDITIONAL."
+            )
+
+        try:
+            raw_response = self._client.get_balance_allowance(
+                params=BalanceAllowanceParams(**params_kwargs)
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise PolymarketClientError(
+                f"Failed to fetch balance/allowance for asset_type={asset_type}."
+            ) from exc
+
+        if not isinstance(raw_response, dict):
+            raise PolymarketClientError("Unexpected balance/allowance payload type.")
+
+        if self._debug:
+            LOGGER.debug("Balance/allowance response: %s", raw_response)
+
+        try:
+            balance_value = int(raw_response["balance"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PolymarketClientError("Malformed balance value in response.") from exc
+
+        raw_allowances = raw_response.get("allowances", {}) or {}
+        if not isinstance(raw_allowances, dict):
+            raise PolymarketClientError("Malformed allowances in response.")
+
+        try:
+            allowance_map = {
+                Web3.to_checksum_address(address): int(amount)
+                for address, amount in raw_allowances.items()
+            }
+        except ValueError as exc:  # includes invalid address or amount parsing
+            raise PolymarketClientError("Malformed allowance entry in response.") from exc
+
+        return BalanceAllowanceResult(balance=balance_value, allowances=allowance_map)
+
+    def initialize_wallet_approvals(
+        self,
+        rpc_url: Optional[str] = None,
+        spenders: Optional[Sequence[str]] = None,
+        wait_timeout: int = 600,
+    ) -> List[Any]:
+        """
+        Ensure the trading wallet has unlimited approvals for the core Polymarket
+        exchange contracts the agent interacts with.
+
+        Parameters
+        ----------
+        rpc_url:
+            Optional override for the Polygon RPC endpoint. Defaults to
+            ``POLYGON_RPC_URL`` when omitted.
+        spenders:
+            Custom iterable of spender addresses to approve. Falls back to
+            ``POLYMARKET_APPROVAL_SPENDERS``.
+        wait_timeout:
+            Seconds to wait for each transaction receipt. Matches the behaviour
+            from the integration test helper.
+        """
+
+        rpc_endpoint = (rpc_url or POLYGON_RPC_URL).strip()
+        if not rpc_endpoint:
+            raise PolymarketClientError("rpc_url must be a non-empty string")
+
+        web3 = Web3(Web3.HTTPProvider(rpc_endpoint))
+        web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+
+        approvals = list(spenders or POLYMARKET_APPROVAL_SPENDERS)
+        if not approvals:
+            return []
+
+        account = web3.eth.account.from_key(self.config.private_key)
+        usdc_contract = web3.eth.contract(
+            address=Web3.to_checksum_address(POLYMARKET_USDC_ADDRESS),
+            abi=erc20_approve,
+        )
+        ctf_contract = web3.eth.contract(
+            address=Web3.to_checksum_address(POLYMARKET_CTF_ADDRESS),
+            abi=erc1155_set_approval,
+        )
+
+        nonce = web3.eth.get_transaction_count(account.address)
+        receipts: List[Any] = []
+
+        for spender in approvals:
+            checksum_spender = Web3.to_checksum_address(spender)
+            if self._debug:
+                LOGGER.debug("Approving spender %s", checksum_spender)
+
+            try:
+                usdc_tx = usdc_contract.functions.approve(
+                    checksum_spender, MAX_APPROVAL_AMOUNT
+                ).build_transaction(
+                    {
+                        "chainId": self.config.chain_id,
+                        "from": account.address,
+                        "nonce": nonce,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - propagate with context
+                raise PolymarketClientError(
+                    f"Failed to build USDC approval transaction for {checksum_spender}"
+                ) from exc
+
+            signed_usdc = web3.eth.account.sign_transaction(
+                usdc_tx, private_key=self.config.private_key
+            )
+            try:
+                usdc_hash = web3.eth.send_raw_transaction(
+                    signed_usdc.raw_transaction
+                )
+                receipts.append(
+                    web3.eth.wait_for_transaction_receipt(usdc_hash, wait_timeout)
+                )
+            except Exception as exc:  # noqa: BLE001 - propagate with context
+                raise PolymarketClientError(
+                    f"Failed to submit USDC approval for {checksum_spender}"
+                ) from exc
+            nonce += 1
+
+            try:
+                ctf_tx = ctf_contract.functions.setApprovalForAll(
+                    checksum_spender, True
+                ).build_transaction(
+                    {
+                        "chainId": self.config.chain_id,
+                        "from": account.address,
+                        "nonce": nonce,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - propagate with context
+                raise PolymarketClientError(
+                    f"Failed to build CTF approval transaction for {checksum_spender}"
+                ) from exc
+
+            signed_ctf = web3.eth.account.sign_transaction(
+                ctf_tx, private_key=self.config.private_key
+            )
+            try:
+                ctf_hash = web3.eth.send_raw_transaction(
+                    signed_ctf.raw_transaction
+                )
+                receipts.append(
+                    web3.eth.wait_for_transaction_receipt(ctf_hash, wait_timeout)
+                )
+            except Exception as exc:  # noqa: BLE001 - propagate with context
+                raise PolymarketClientError(
+                    f"Failed to submit CTF approval for {checksum_spender}"
+                ) from exc
+            nonce += 1
+
+        return receipts
 
     # Internal helpers ------------------------------------------------------------
 

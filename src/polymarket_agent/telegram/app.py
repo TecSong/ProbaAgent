@@ -30,6 +30,10 @@ from .dependencies import (
 )
 from .insight import generate_market_insight, NoRelevantMarketError
 from .snapshot import collect_market_snapshot, format_usd
+from scripts.test_tg_text_format import (
+    MARKDOWN_SAMPLE,
+    format_markdown_v2_diagnostics,
+)
 
 load_dotenv()
 
@@ -295,6 +299,7 @@ def build_application() -> Application:
             "/reset – clear conversation history\n"
             "/insight <market or event title> – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
+            "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
             "Otherwise, just send messages describing what you want to do on Polymarket."
         )
         await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
@@ -343,6 +348,30 @@ def build_application() -> Application:
             return
 
         await thinking_msg.edit_text(insight_text, parse_mode=ParseMode.MARKDOWN)
+
+    async def debug_markdown(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
+        message = update.message
+        if message is None:
+            return
+
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_authorized(user_id):
+            await _reject(update)
+            return
+
+        raw_text = " ".join(context.args).strip() if context.args else ""
+        if not raw_text and message.reply_to_message:
+            reply_source = message.reply_to_message
+            raw_text = (reply_source.text or reply_source.caption or "").strip()
+
+        if not raw_text:
+            raw_text = MARKDOWN_SAMPLE
+
+        await message.reply_text(
+            raw_text,
+            parse_mode=ParseMode.MARKDOWN,
+            # disable_web_page_preview=True,
+        )
 
     async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
@@ -449,6 +478,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(CommandHandler("insight", insight))
     application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
     application.add_handler(CallbackQueryHandler(event_insight_callback, pattern=r"^insight:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     return application
