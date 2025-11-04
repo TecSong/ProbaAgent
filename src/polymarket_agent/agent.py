@@ -22,10 +22,16 @@ def build_polymarket_agent(
     model: str = "gpt-4o-mini",
     temperature: float = 0.0,
     system_prompt: str = SYSTEM_INSTRUCTIONS,
+    default_platform: str | None = None,
+    default_platform_id: str | None = None,
 ):
-    tools = build_polymarket_tools(client)
+    tools = build_polymarket_tools(
+        client,
+        default_platform=default_platform,
+        default_platform_id=default_platform_id,
+    )
     llm = ChatOpenAI(model=model, temperature=temperature)
-    return create_agent(model=llm, tools=tools, system_prompt=system_prompt)
+    return create_agent(model=llm, tools=tools, system_prompt=system_prompt, debug=True)
 
 
 def update_history(history: List[Dict[str, str]], user_text: str, agent_output: str) -> None:

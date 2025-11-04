@@ -6,11 +6,8 @@ load_dotenv()
 
 def main():
     client = build_client_from_env()
-    response = client.create_order(
-        token_id="87769991026114894163580777793845523168226980076553814689875238288185044414090",
-        side="SELL",
-        size=5.0,
-        price=0.68
+    response = client.cancel_order(
+        order_id="0x19ac160afeefaae57a8ac60bb7d76ff3fc8797f1238cfbf0614a7b049ca3e805"
     )
     print(response)
 

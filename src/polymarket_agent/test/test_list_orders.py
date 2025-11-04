@@ -6,11 +6,9 @@ load_dotenv()
 
 def main():
     client = build_client_from_env()
-    response = client.create_order(
-        token_id="87769991026114894163580777793845523168226980076553814689875238288185044414090",
-        side="SELL",
-        size=5.0,
-        price=0.68
+    response = client.list_orders(
+        platform="telegram",
+        platform_id="5554190123",
     )
     print(response)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, confloat, conint
@@ -8,32 +8,44 @@ from pydantic import BaseModel, Field, confloat, conint
 from .client import PolymarketClient
 
 
-class ListOrdersInput(BaseModel):
+class _UserContextInput(BaseModel):
+    platform: str | None = Field(
+        default=None,
+        description="User platform identifier (e.g. `telegram`) whose wallet should be used.",
+    )
+    platform_id: str | None = Field(
+        default=None,
+        description="Platform-specific user identifier required when `platform` is supplied.",
+    )
+
+
+class ListOrdersInput(_UserContextInput):
     market_id: str | None = Field(
         default=None,
         description="Optional market (address) used when filtering open orders.",
     )
 
 
-class PlaceOrderInput(BaseModel):
+class PlaceOrderInput(_UserContextInput):
     token_id: str = Field(..., description="Outcome token id (ERC-1155) per market side.")
     side: str = Field(..., description="buy for YES/long, sell for NO/short.")
     size: confloat(gt=0) = Field(..., description="Number of shares to trade.")
     price: confloat(gt=0, le=1) = Field(
         ..., description="Limit price (0-1) expressed as decimal probability."
     )
-    order_type: str = Field(
-        default="gtc",
-        description="Order type string documented in py-clob-client (GTC/FOK/IOC).",
-    )
-    expiration: int | None = Field(
-        default=None,
-        description="Unix timestamp; order becomes invalid after this time.",
-    )
 
 
-class CancelOrderInput(BaseModel):
+class CancelOrderInput(_UserContextInput):
     order_id: str = Field(..., description="Identifier of the order to cancel.")
+
+
+class ListPositionsInput(_UserContextInput):
+    wallet_address: str | None = Field(
+        default=None,
+        description=(
+            "Optional wallet override. When omitted, the tool resolves the wallet using platform/platform_id."
+        ),
+    )
 
 
 class ListMarketsInput(BaseModel):
@@ -181,7 +193,22 @@ def _wrap(client: PolymarketClient, method_name: str) -> Callable:
     return _call
 
 
-def build_polymarket_tools(client: PolymarketClient) -> List[StructuredTool]:
+def build_polymarket_tools(
+    client: PolymarketClient,
+    default_platform: Optional[str] = None,
+    default_platform_id: Optional[str] = None,
+) -> List[StructuredTool]:
+    def _wrap_with_defaults(method_name: str) -> Callable:
+        base = getattr(client, method_name)
+
+        def _call(**kwargs):
+            if default_platform is not None and kwargs.get("platform") is None:
+                kwargs["platform"] = default_platform
+            if default_platform_id is not None and kwargs.get("platform_id") is None:
+                kwargs["platform_id"] = default_platform_id
+            return base(**kwargs)
+
+        return _call
     return [
         StructuredTool.from_function(
             name="search_polymarket_catalog",
@@ -197,8 +224,17 @@ def build_polymarket_tools(client: PolymarketClient) -> List[StructuredTool]:
                 "Use to inspect currently open orders returned by py-clob-client. "
                 "Great for prompts like 'query my open orders'."
             ),
-            func=_wrap(client, "list_orders"),
+            func=_wrap_with_defaults("list_orders"),
             args_schema=ListOrdersInput,
+        ),
+        StructuredTool.from_function(
+            name="list_polymarket_positions",
+            description=(
+                "Use to fetch Polymarket positions for the active user. "
+                "Requires platform context or an explicit wallet override."
+            ),
+            func=_wrap_with_defaults("list_positions"),
+            args_schema=ListPositionsInput,
         ),
         StructuredTool.from_function(
             name="list_polymarket_markets",
@@ -232,13 +268,13 @@ def build_polymarket_tools(client: PolymarketClient) -> List[StructuredTool]:
                 "Use to submit a new limit order via the Polymarket CLOB. "
                 "Requires token id, side (buy/sell), price, and size."
             ),
-            func=_wrap(client, "create_order"),
+            func=_wrap_with_defaults("create_order"),
             args_schema=PlaceOrderInput,
         ),
         StructuredTool.from_function(
             name="cancel_polymarket_order",
             description="Use to cancel an existing order by id.",
-            func=_wrap(client, "cancel_order"),
+            func=_wrap_with_defaults("cancel_order"),
             args_schema=CancelOrderInput,
         ),
     ]

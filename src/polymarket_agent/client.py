@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import hashlib
 import logging
+import os
 import requests
+import threading
+import time
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
     AssetType,
@@ -19,6 +23,7 @@ from py_clob_client.order_builder.constants import BUY, SELL
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
+from .user.repository import SupabaseUserRepository, UserRepositoryError
 from .constant import (
     MAX_APPROVAL_AMOUNT,
     POLYGON_RPC_URL,
@@ -32,6 +37,126 @@ from .test.approve_abi import erc1155_set_approval, erc20_approve
 
 LOGGER = logging.getLogger(__name__)
 _LOGGER_CONFIGURED = False
+
+
+def _load_client_cache_ttl() -> float:
+    raw = os.getenv("POLYMARKET_CLIENT_CACHE_TTL")
+    if not raw:
+        return 900.0
+    try:
+        value = float(raw)
+    except ValueError:
+        LOGGER.warning(
+            "Invalid POLYMARKET_CLIENT_CACHE_TTL value %r. Falling back to 900 seconds.",
+            raw,
+        )
+        return 900.0
+    if value <= 0:
+        return 0.0
+    return value
+
+
+_CLIENT_CACHE_TTL_SECONDS = _load_client_cache_ttl()
+
+
+@dataclass(slots=True)
+class _ClobClientCacheEntry:
+    client: ClobClient
+    expires_at: float
+
+
+_ClientCacheKey = Tuple[str, str, int, int, str]
+_CLIENT_CACHE: Dict[_ClientCacheKey, _ClobClientCacheEntry] = {}
+_CLIENT_CACHE_LOCK = threading.Lock()
+
+
+def _normalize_host(host: str) -> str:
+    return host.strip().rstrip("/").lower()
+
+
+def _client_cache_key(config: PolymarketClientConfig) -> _ClientCacheKey:
+    funder = (config.funder or "").strip().lower()
+    identity = (config.cache_key or "").strip()
+    if not identity:
+        identity = f"pk:{hashlib.sha256(config.private_key.encode('utf-8')).hexdigest()}"
+    signature_type = config.signature_type if config.signature_type is not None else 0
+    return (
+        _normalize_host(config.host),
+        identity,
+        config.chain_id,
+        signature_type,
+        funder,
+    )
+
+
+def _prune_expired_clients_locked(reference_time: float) -> None:
+    expired = [
+        cache_key
+        for cache_key, entry in _CLIENT_CACHE.items()
+        if entry.expires_at <= reference_time
+    ]
+    for cache_key in expired:
+        _CLIENT_CACHE.pop(cache_key, None)
+
+
+def _instantiate_clob_client(config: PolymarketClientConfig) -> ClobClient:
+    kwargs: Dict[str, Any] = {
+        "host": config.host,
+        "key": config.private_key,
+        "chain_id": config.chain_id,
+        "signature_type": config.signature_type,
+    }
+    if config.funder:
+        kwargs["funder"] = config.funder
+    client = ClobClient(**kwargs)
+    client.set_api_creds(client.create_or_derive_api_creds())
+    return client
+
+
+def _get_clob_client(config: PolymarketClientConfig) -> ClobClient:
+    ttl = _CLIENT_CACHE_TTL_SECONDS
+    if ttl <= 0:
+        return _instantiate_clob_client(config)
+
+    cache_key = _client_cache_key(config)
+    now = time.monotonic()
+    with _CLIENT_CACHE_LOCK:
+        entry = _CLIENT_CACHE.get(cache_key)
+        if entry and entry.expires_at > now:
+            entry.expires_at = now + ttl
+            return entry.client
+
+    client = _instantiate_clob_client(config)
+    updated_now = time.monotonic()
+    new_expiry = updated_now + ttl
+
+    with _CLIENT_CACHE_LOCK:
+        entry = _CLIENT_CACHE.get(cache_key)
+        if entry and entry.expires_at > updated_now:
+            entry.expires_at = updated_now + ttl
+            return entry.client
+        _CLIENT_CACHE[cache_key] = _ClobClientCacheEntry(client=client, expires_at=new_expiry)
+        _prune_expired_clients_locked(updated_now)
+    return client
+
+
+_USER_REPOSITORY: Optional[SupabaseUserRepository] = None
+_USER_REPOSITORY_LOCK = threading.Lock()
+_USER_PRIVATE_KEY_CACHE: Dict[Tuple[str, str], str] = {}
+_USER_PRIVATE_KEY_CACHE_LOCK = threading.Lock()
+
+
+def _get_user_repository() -> SupabaseUserRepository:
+    global _USER_REPOSITORY
+    repo = _USER_REPOSITORY
+    if repo is not None:
+        return repo
+    with _USER_REPOSITORY_LOCK:
+        repo = _USER_REPOSITORY
+        if repo is not None:
+            return repo
+        _USER_REPOSITORY = SupabaseUserRepository.from_env()
+        return _USER_REPOSITORY
 
 
 def _ensure_logger():
@@ -62,6 +187,7 @@ class PolymarketClientConfig:
     data_api_base: str = "https://data-api.polymarket.com"
     timeout: int = 15
     debug: bool = False
+    cache_key: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -80,23 +206,11 @@ class PolymarketClient:
 
     def __init__(self, config: PolymarketClientConfig) -> None:
         self.config = config
-        ClobClientDict = {
-            "host": config.host,
-            "key": config.private_key,
-            "chain_id": config.chain_id,
-            "signature_type": config.signature_type
-        }
-        if config.funder:
-            ClobClientDict["funder"] = config.funder
-        self._client = ClobClient(
-            **ClobClientDict
-        )
+        self._client = _get_clob_client(config)
         try:
             self._wallet_address = Web3.to_checksum_address(self._client.get_address())
         except Exception:  # noqa: BLE001 - fallback to derived address
             self._wallet_address = ""
-        # Create API creds if needed (per py-clob-client README).
-        self._client.set_api_creds(self._client.create_or_derive_api_creds())
         self._gamma = requests.Session()
         self._gamma.headers.update({"Accept": "application/json"})
         self._data_api = requests.Session()
@@ -108,6 +222,82 @@ class PolymarketClient:
         if self._debug:
             _ensure_logger()
             LOGGER.setLevel(logging.DEBUG)
+
+    def _ensure_user_client(
+        self, platform: Optional[str], platform_user_id: Optional[str]
+    ) -> None:
+        if platform is None and platform_user_id is None:
+            return
+        if platform is None or platform_user_id is None:
+            raise PolymarketClientError(
+                "platform and platform_id must both be provided when overriding credentials."
+            )
+        platform_str = str(platform)
+        platform_user_str = str(platform_user_id)
+        if not platform_str.strip() or not platform_user_str.strip():
+            raise PolymarketClientError(
+                "platform and platform_id must be non-empty strings."
+            )
+        private_key = self._resolve_user_private_key(platform_str, platform_user_str)
+        desired_cache_key = (
+            f"user:{platform_str.strip().lower()}:{platform_user_str.strip()}"
+        )
+        if (
+            self.config.private_key == private_key
+            and self.config.cache_key == desired_cache_key
+        ):
+            return
+        self.config.private_key = private_key
+        self.config.cache_key = desired_cache_key
+        self._client = _get_clob_client(self.config)
+        self._wallet_address = ""
+
+    def _resolve_user_private_key(
+        self, platform: str, platform_user_id: str
+    ) -> str:
+        platform_value = str(platform).strip()
+        platform_user_value = str(platform_user_id).strip()
+        if not platform_value or not platform_user_value:
+            raise PolymarketClientError(
+                "platform and platform_id must be non-empty strings."
+            )
+        cache_key = (platform_value.lower(), platform_user_value)
+        with _USER_PRIVATE_KEY_CACHE_LOCK:
+            cached = _USER_PRIVATE_KEY_CACHE.get(cache_key)
+            if cached:
+                return cached
+        try:
+            repository = _get_user_repository()
+        except UserRepositoryError as exc:
+            raise PolymarketClientError(
+                f"Unable to initialize Supabase repository: {exc}"
+            ) from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            raise PolymarketClientError(
+                "Unexpected error while initializing Supabase repository."
+            ) from exc
+        try:
+            record = repository.fetch_user(platform_value, platform_user_value)
+        except UserRepositoryError as exc:
+            raise PolymarketClientError(
+                f"Failed to fetch user credentials for {platform_value}:{platform_user_value}: {exc}"
+            ) from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            raise PolymarketClientError(
+                f"Unexpected Supabase error while fetching {platform_value}:{platform_user_value}."
+            ) from exc
+        if not record:
+            raise PolymarketClientError(
+                f"User {platform_value}:{platform_user_value} not found in Supabase."
+            )
+        private_key = str(record.get("wallet_private_key") or "").strip()
+        if not private_key:
+            raise PolymarketClientError(
+                f"User {platform_value}:{platform_user_value} is missing wallet_private_key."
+            )
+        with _USER_PRIVATE_KEY_CACHE_LOCK:
+            _USER_PRIVATE_KEY_CACHE[cache_key] = private_key
+        return private_key
 
     @property
     def wallet_address(self) -> str:
@@ -204,7 +394,13 @@ class PolymarketClient:
 
     # Public API -----------------------------------------------------------------
 
-    def list_orders(self, market_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_orders(
+        self,
+        market_id: Optional[str] = None,
+        platform: Optional[str] = None,
+        platform_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        self._ensure_user_client(platform, platform_id)
         params = OpenOrderParams()
         if market_id:
             params.market = market_id
@@ -384,12 +580,23 @@ class PolymarketClient:
             params={"token_id": token_id, "side": normalized},
         )
 
-    def list_positions(self, wallet_address: str) -> List[Dict[str, Any]]:
+    def list_positions(
+        self,
+        wallet_address: Optional[str] = None,
+        platform: Optional[str] = None,
+        platform_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Fetch current Polymarket positions for a wallet via the public data API.
         """
 
-        address = wallet_address.strip()
+        if wallet_address is None:
+            self._ensure_user_client(platform, platform_id)
+            wallet_address = self.wallet_address
+        elif platform is not None or platform_id is not None:
+            self._ensure_user_client(platform, platform_id)
+
+        address = str(wallet_address or "").strip()
         if not address:
             raise PolymarketClientError("wallet_address must be a non-empty string.")
 
@@ -403,13 +610,17 @@ class PolymarketClient:
         token_id: str,
         side: str,
         size: float,
-        price: float
+        price: float,
+        platform: Optional[str] = None,
+        platform_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        self._ensure_user_client(platform, platform_id)
         normalized_side = self._coerce_side(side)
         required_collateral = self._calculate_required_collateral(
             normalized_side, size, price
         )
-        self._ensure_balance_and_allowance(required_collateral)
+        if normalized_side == BUY:
+            self._ensure_balance_and_allowance(required_collateral)
 
         order_args = OrderArgs(
             token_id=token_id,
@@ -452,7 +663,13 @@ class PolymarketClient:
                 )
         return response
 
-    def cancel_order(self, order_id: str) -> Dict[str, Any]:
+    def cancel_order(
+        self,
+        order_id: str,
+        platform: Optional[str] = None,
+        platform_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._ensure_user_client(platform, platform_id)
         return self._client.cancel(order_id)
 
     def check_balance_and_allowance(
@@ -659,30 +876,6 @@ class PolymarketClient:
             raise PolymarketClientError(
                 f"Unsupported order_type '{order_type}'. Options: {', '.join(mapping)}."
             ) from exc
-
-    def update_balance_allowance(self, token_id: str) -> Dict[str, Any]:
-        params = BalanceAllowanceParams(
-            asset_type=AssetType.COLLATERAL
-        )
-        try:
-            self._client.update_balance_allowance(params)
-            # YES
-            self._client.update_balance_allowance(
-                params=BalanceAllowanceParams(
-                    asset_type=AssetType.CONDITIONAL,
-                    token_id=token_id,
-                )
-            )
-
-            # NO
-            self._client.update_balance_allowance(
-                params=BalanceAllowanceParams(
-                    asset_type=AssetType.CONDITIONAL,
-                    token_id=token_id,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception(f"Failed to update balance allowance for token {token_id}: {exc}")
 
     def _gamma_request(
         self, method: str, path: str, params: Optional[Dict[str, Any]] = None

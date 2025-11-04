@@ -74,7 +74,6 @@ def build_application() -> Application:
 
     allowed_ids = _parse_allowed_ids(os.getenv("TELEGRAM_ALLOWED_USER_IDS"))
     client = build_client_from_env()
-    agent = build_polymarket_agent(client)
     try:
         user_service = UserService.from_env()
     except UserServiceError as exc:
@@ -82,6 +81,7 @@ def build_application() -> Application:
     histories: Dict[int, List[Dict[str, str]]] = {}
     search_sessions: Dict[int, Dict[str, Any]] = {}
     insight_sessions: Dict[int, Dict[str, Any]] = {}
+    agents: Dict[int, Dict[str, Any]] = {}
 
     def _generate_market_insight(query: str, max_results: int = MAX_RESULTS) -> str:
         return generate_market_insight(client, query, max_results=max_results)
@@ -137,6 +137,7 @@ def build_application() -> Application:
         chat_id = update.effective_chat.id if update.effective_chat else None
         if chat_id is not None:
             histories.pop(chat_id, None)
+            agents.pop(chat_id, None)
         await update.message.reply_text("Conversation history cleared.", parse_mode=ParseMode.MARKDOWN)
 
     def _sanitize(text: str) -> str:
@@ -519,7 +520,11 @@ def build_application() -> Application:
 
         await message.chat.send_action(action=ChatAction.TYPING)
         try:
-            positions_data = client.list_positions(record.wallet_address)
+            positions_data = client.list_positions(
+                wallet_address=record.wallet_address,
+                platform=info.platform,
+                platform_id=info.platform_user_id,
+            )
         except PolymarketClientError as exc:
             LOGGER.exception(
                 "Positions fetch failed for wallet %s: %s",
@@ -734,6 +739,26 @@ def build_application() -> Application:
             )
             return
 
+        def _get_agent_for_chat(chat_id: int) -> Any:
+            platform = info.platform
+            platform_user_id = info.platform_user_id
+            record = agents.get(chat_id)
+            if (
+                record is None
+                or record.get("platform") != platform
+                or record.get("platform_id") != platform_user_id
+            ):
+                agents[chat_id] = {
+                    "agent": build_polymarket_agent(
+                        client,
+                        default_platform=platform,
+                        default_platform_id=platform_user_id,
+                    ),
+                    "platform": platform,
+                    "platform_id": platform_user_id,
+                }
+            return agents[chat_id]["agent"]
+
         insight_session = insight_sessions.get(chat_id)
         if insight_session and message.reply_to_message:
             prompt_id = insight_session.get("prompt_id")
@@ -782,6 +807,7 @@ def build_application() -> Application:
         #     text += chunk
         #     await msg.edit_text(text)
         try:
+            agent = _get_agent_for_chat(chat_id)
             result = run_agent_loop(agent, text, history)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Agent invocation failed")
