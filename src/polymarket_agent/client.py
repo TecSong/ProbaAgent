@@ -602,6 +602,9 @@ class PolymarketClient:
 
         payload = self._data_api_request("GET", "/positions", params={"user": address})
         if isinstance(payload, list):
+            for position in payload:
+                position["token_id"] = position.get("asset")
+                position.pop("asset")
             return payload
         raise PolymarketClientError("Malformed positions response from Polymarket data API.")
 

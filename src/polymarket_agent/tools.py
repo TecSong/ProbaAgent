@@ -28,7 +28,12 @@ class ListOrdersInput(_UserContextInput):
 
 class PlaceOrderInput(_UserContextInput):
     token_id: str = Field(..., description="Outcome token id (ERC-1155) per market side.")
-    side: str = Field(..., description="buy for YES/long, sell for NO/short.")
+    side: str = Field(
+        ...,
+        description=(
+            "buy when opening a YES/NO market; sell when unwinding an existing YES/NO position/token."
+        ),
+    )
     size: confloat(gt=0) = Field(..., description="Number of shares to trade.")
     price: confloat(gt=0, le=1) = Field(
         ..., description="Limit price (0-1) expressed as decimal probability."
