@@ -23,7 +23,7 @@ def build_client_from_env() -> PolymarketClient:
     host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
     private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
     chain_id = int(os.getenv("POLYMARKET_CHAIN_ID", "137"))
-    signature_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1"))
+    signature_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0"))
     funder = os.getenv("POLYMARKET_FUNDER")
     gamma_base = os.getenv("POLYMARKET_GAMMA_BASE", "https://gamma-api.polymarket.com")
     data_api_base = os.getenv("POLYMARKET_DATA_API_BASE", "https://data-api.polymarket.com")

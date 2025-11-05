@@ -81,6 +81,21 @@ Visit http://localhost:5173 to talk to the agent. Each message sends the accumul
    ```
    The process keeps a conversation history per chat ID and relays every incoming message to the LangChain agent. Use `/reset` to clear the history or `/help` for available commands.
 
+### Docker Deployment
+
+1. **Build the image**
+   ```bash
+   docker build -t polymarket-telegram-bot .
+   ```
+2. **Run with Compose** – ensure your `.env` contains the Telegram and Polymarket credentials, then launch:
+   ```bash
+   docker compose -f docker-compose.telegram.yml up -d
+   ```
+3. **Inspect logs** – confirm the bot connected successfully:
+   ```bash
+   docker compose -f docker-compose.telegram.yml logs -f
+   ```
+
 ## Project Structure
 
 - `polymarket_agent/client.py` – thin wrapper around `py-clob-client` + Gamma `/markets`.
