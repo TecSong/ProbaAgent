@@ -30,10 +30,10 @@ SYSTEM_PROMPT = {
     ),
     "output_format": (
         "Outputs structured Markdown text with the following sections in order: "
-        "'Summary', 'Key Insights', 'Trading Recommendations', 'Risk Considerations', and "
-        "'Market Context'. Each heading should be written as 'Summary:', etc., on its own line "
+        "'🌟 *Summary*', '🌟 *Key Insights*', '🌟 *Trading Recommendations*', '🌟 *Risk Considerations*', and "
+        "'🌟 *Market Context*'. Each heading should be written as '🌟 *Summary*:', etc., on its own line "
         "followed by prose or bullet points. Do not return JSON or wrap the response in braces. "
-        "Within 'Trading Recommendations', explicitly state model-derived probability estimates "
+        "Within '🌟 *Trading Recommendations*', explicitly state model-derived probability estimates "
         "for the primary outcomes (e.g., Yes and No)."
     ),
     "instructions": (
