@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, List
@@ -21,11 +22,17 @@ def format_usd(value: Any) -> str | None:
 
     abs_num = abs(num)
     if abs_num >= 1_000_000_000:
-        rendered = f"${num / 1_000_000_000:.1f}B"
+        scaled = num / 1_000_000_000
+        value_text = f"{scaled:.1f}".rstrip("0").rstrip(".")
+        rendered = f"${value_text}B"
     elif abs_num >= 1_000_000:
-        rendered = f"${num / 1_000_000:.1f}M"
+        scaled = num / 1_000_000
+        value_text = f"{scaled:.1f}".rstrip("0").rstrip(".")
+        rendered = f"${value_text}M"
     elif abs_num >= 1_000:
-        rendered = f"${num / 1_000:.1f}K"
+        scaled = num / 1_000
+        value_text = f"{scaled:.1f}".rstrip("0").rstrip(".")
+        rendered = f"${value_text}K"
     else:
         rendered = f"${num:.2f}" if abs_num < 1 else f"${num:,.0f}"
 
@@ -40,7 +47,8 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
         return None
 
     seen_ids: set[str] = set()
-    candidates: List[Dict[str, Any]] = []
+    primary_candidates: List[Dict[str, Any]] = []
+    fallback_candidates: List[Dict[str, Any]] = []
 
     query_tokens = [
         token
@@ -54,21 +62,80 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
         "dem": ("democrat", "democratic"),
     }
 
-    def _token_matches(token: str, text: str) -> bool:
-        if token in text:
-            return True
-        for synonym in synonym_map.get(token, ()):
-            if synonym in text:
+    def _collapse_fragment(text: str) -> str:
+        return re.sub(r"[^0-9a-z]+", "", text)
+
+    def _parse_numeric_token(token: str) -> float | None:
+        normalized = token.strip().lower()
+        if not normalized:
+            return None
+        normalized = normalized.lstrip("$").replace(",", "")
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)([kmb]?)", normalized)
+        if not match:
+            return None
+        base = float(match.group(1))
+        suffix = match.group(2)
+        multiplier = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}.get(suffix, 1)
+        return base * multiplier
+
+    def _numeric_variants(value: float) -> set[str]:
+        variants: set[str] = set()
+        if value is None:
+            return variants
+        if float(value).is_integer():
+            integral = int(round(value))
+            variants.add(str(integral))
+            variants.add(f"{integral:,}")
+        else:
+            text = f"{value:.4f}".rstrip("0").rstrip(".")
+            variants.add(text)
+        for suffix, divisor in (("k", 1_000), ("m", 1_000_000), ("b", 1_000_000_000)):
+            scaled = value / divisor
+            if scaled < 1:
+                continue
+            if float(scaled).is_integer():
+                scaled_text = str(int(round(scaled)))
+            else:
+                scaled_text = f"{scaled:.3f}".rstrip("0").rstrip(".")
+            variants.add(f"{scaled_text}{suffix}")
+        return {variant for variant in variants if variant}
+
+    def _token_matches(token: str, lowered_text: str, collapsed_text: str) -> bool:
+        if not token:
+            return False
+        textual_variants = [token]
+        textual_variants.extend(synonym_map.get(token, ()))
+        for variant in textual_variants:
+            lowered_variant = variant.lower()
+            collapsed_variant = _collapse_fragment(lowered_variant)
+            if lowered_variant and lowered_variant in lowered_text:
+                return True
+            if collapsed_variant and collapsed_variant in collapsed_text:
+                return True
+        numeric_value = _parse_numeric_token(token)
+        if numeric_value is None:
+            return False
+        for rendering in _numeric_variants(numeric_value):
+            lowered_rendering = rendering.lower()
+            collapsed_rendering = _collapse_fragment(lowered_rendering)
+            if lowered_rendering and lowered_rendering in lowered_text:
+                return True
+            if collapsed_rendering and collapsed_rendering in collapsed_text:
                 return True
         return False
 
-    def _matches_query_text(text: str) -> bool:
+    def _match_score(text: Any) -> int:
         if not query_tokens:
-            return bool(str(text).strip())
-        lowered = str(text).lower()
+            return 0
+        lowered = str(text or "").lower()
         if not lowered:
-            return False
-        return all(_token_matches(token, lowered) for token in query_tokens)
+            return 0
+        collapsed = _collapse_fragment(lowered)
+        matches = 0
+        for token in query_tokens:
+            if _token_matches(token, lowered, collapsed):
+                matches += 1
+        return matches
 
     def _event_summary(entry: Dict[str, Any]) -> str:
         fields: List[str] = []
@@ -80,7 +147,16 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
 
     def _market_summary(entry: Dict[str, Any]) -> str:
         fields: List[str] = []
-        for key in ("question", "title", "name", "ticker", "slug", "description"):
+        for key in (
+            "question",
+            "title",
+            "name",
+            "ticker",
+            "slug",
+            "description",
+            "groupItemTitle",
+            "groupItemThreshold",
+        ):
             value = entry.get(key)
             if isinstance(value, (str, int, float)):
                 fields.append(str(value))
@@ -109,7 +185,13 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
     direct_id = _normalize_market_id(cleaned) if cleaned.isdigit() else None
     if direct_id:
         seen_ids.add(direct_id)
-        candidates.append({"market_id": direct_id, "context": {"type": "input"}})
+        primary_candidates.append(
+            {
+                "market_id": direct_id,
+                "context": {"type": "input"},
+                "match_score": len(query_tokens) if query_tokens else 1,
+            }
+        )
 
     try:
         search_payload = client.search_markets_events_profiles(query=cleaned)
@@ -139,8 +221,6 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
         markets = entry.get("markets")
         if not isinstance(markets, list) or not markets:
             return
-        if not _matches_query_text(_event_summary(entry)):
-            return
         event_title = (
             entry.get("title")
             or entry.get("name")
@@ -148,13 +228,30 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
             or entry.get("slug")
             or entry.get("ticker")
         )
+        event_meta_fields = (
+            (("startDate", "start_date", "startDateIso"), "event_start_date"),
+            (("endDate", "end_date", "closeDate", "endDateIso"), "event_end_date"),
+            (("volume", "volumeNum", "volume_num"), "event_volume"),
+            (("liquidity", "liquidity_num", "liquidityNum"), "event_liquidity"),
+            (("closed", "isClosed"), "event_closed"),
+        )
         for market in markets:
             if isinstance(market, dict) and event_title:
                 enriched_market = dict(market)
                 enriched_market.setdefault("event_title", event_title)
+                for source_keys, target_key in event_meta_fields:
+                    if target_key in enriched_market:
+                        continue
+                    for source_key in source_keys:
+                        value = entry.get(source_key)
+                        if value not in (None, "", "-", "NaN"):
+                            enriched_market[target_key] = value
+                            break
                 target.append(enriched_market)
             else:
                 target.append(market)
+
+    required_full_score = len(query_tokens) if query_tokens else 1
 
     if isinstance(search_payload, dict):
         markets_section: List[Any] = []
@@ -181,21 +278,42 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
                     _extend_markets_from_events(event_entry, markets_section)
 
         for entry in markets_section:
-            if isinstance(entry, dict) and not _matches_query_text(_market_summary(entry)):
+            if not isinstance(entry, dict):
                 continue
+            summary_text = _market_summary(entry)
+            if query_tokens:
+                score = _match_score(summary_text)
+                if score == 0:
+                    continue
+            else:
+                if not str(summary_text).strip():
+                    continue
+                score = required_full_score
             market_id = _extract_market_id(entry)
             if not market_id or market_id in seen_ids:
                 continue
+            candidate = {"market_id": market_id, "context": entry, "match_score": score}
             seen_ids.add(market_id)
-            candidates.append({"market_id": market_id, "context": entry})
+            if not query_tokens or score >= required_full_score:
+                primary_candidates.append(candidate)
+            else:
+                fallback_candidates.append(candidate)
 
-    if not candidates and search_payload is not None:
+    candidate_queue: List[Dict[str, Any]] = primary_candidates or fallback_candidates
+    if not candidate_queue and search_payload is not None:
         raise NoRelevantMarketError("No relevant markets matched the query.")
+    ordered_candidates = [
+        entry
+        for _, entry in sorted(
+            enumerate(candidate_queue),
+            key=lambda item: (-item[1].get("match_score", 0), item[0]),
+        )
+    ]
 
     selected_detail: Dict[str, Any] | None = None
     selected_candidate: Dict[str, Any] | None = None
 
-    for candidate in candidates:
+    for candidate in ordered_candidates:
         market_id = candidate.get("market_id")
         if not market_id:
             continue
@@ -254,41 +372,69 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
     market_section = selected_detail.get("market")
     market_dict = market_section if isinstance(market_section, dict) else {}
 
-    title = (
-        selected_detail.get("question")
-        or selected_detail.get("title")
-        or market_dict.get("question")
-        or market_dict.get("title")
-    )
+    context_entry = selected_candidate.get("context") if isinstance(selected_candidate.get("context"), dict) else {}
+    context_event = context_entry.get("event") if isinstance(context_entry.get("event"), dict) else None
+    detail_event = selected_detail.get("event") if isinstance(selected_detail.get("event"), dict) else None
 
-    status = (
-        selected_detail.get("status")
-        or market_dict.get("status")
-        or market_dict.get("state")
-    )
+    value_sources = [selected_detail, market_dict]
+    for candidate in (detail_event, context_entry, context_event):
+        if isinstance(candidate, dict):
+            value_sources.append(candidate)
 
-    close_time = (
-        selected_detail.get("end_date")
-        or selected_detail.get("closes_at")
-        or market_dict.get("end_date")
-        or market_dict.get("closeDate")
-    )
+    def _extract_value(*names: str) -> Any:
+        for source in value_sources:
+            if not isinstance(source, dict):
+                continue
+            for name in names:
+                if name not in source:
+                    continue
+                value = source.get(name)
+                if value in (None, "", "-", "NaN"):
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                return value
+        return None
 
-    volume_24h = (
-        selected_detail.get("volume_24h")
-        or selected_detail.get("volume24h")
-        or selected_detail.get("volume_24hr")
-        or market_dict.get("volume_24h")
-        or market_dict.get("volume24h")
-        or market_dict.get("volume_24hr")
-    )
+    def _extract_text(*names: str) -> str | None:
+        value = _extract_value(*names)
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            return text or None
+        return None
 
-    liquidity = (
-        selected_detail.get("liquidity")
-        or selected_detail.get("liquidity_num")
-        or market_dict.get("liquidity")
-        or market_dict.get("liquidity_num")
+    title = _extract_text("question", "title", "name", "slug", "ticker")
+    status = _extract_text("status", "state")
+    start_time = _extract_text("start_date", "startDate", "startDateIso", "event_start_date")
+    end_time = _extract_text(
+        "end_date",
+        "endDate",
+        "closes_at",
+        "closeDate",
+        "endDateIso",
+        "event_end_date",
     )
+    volume_total = _extract_value(
+        "volume",
+        "volume_num",
+        "volumeNum",
+        "volume_number",
+        "volumeClob",
+        "volume_clob",
+        "event_volume",
+    )
+    volume_24h = _extract_value(
+        "volume_24h",
+        "volume24h",
+        "volume_24hr",
+        "volume24hr",
+        "volume24",
+        "volume24hrClob",
+        "volume_24hr_clob",
+    )
+    liquidity = _extract_value("liquidity", "liquidity_num", "liquidityNum", "liquidityClob", "event_liquidity")
+    closed_flag_value = _extract_value("closed", "isClosed", "event_closed")
+    event_title = _extract_text("event_title", "eventTitle", "event_name", "event")
 
     token_snapshots: Dict[str, Dict[str, Any]] = {}
 
@@ -417,66 +563,147 @@ def collect_market_snapshot(client: Any, query: str) -> str | None:
         ):
             token_entry["sell_price"] = token_entry.get("best_bid")
 
+    def _normalize_bool(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "yes", "1"}:
+                return True
+            if lowered in {"false", "no", "0"}:
+                return False
+        return None
+
+    def _render_datetime(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if "T" in text:
+            date_part, time_part = text.split("T", 1)
+            time_part = time_part.rstrip("Z")
+            if time_part:
+                hhmm = time_part[:5]
+                if len(hhmm) == 5 and hhmm[2] == ":":
+                    return f"{date_part} {hhmm}"
+            return date_part
+        return text
+
+    def _parse_sequence(value: Any) -> List[Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return parsed
+            parts = [piece.strip() for piece in text.split(",") if piece.strip()]
+            if parts:
+                return parts
+        return None
+
+    start_text = _render_datetime(start_time) or "n/a"
+    end_text = _render_datetime(end_time) or "n/a"
+    closed_flag = _normalize_bool(closed_flag_value)
+
+    volume_total_float = _safe_to_float(volume_total)
+    volume_total_text = format_usd(volume_total_float) if volume_total_float is not None else None
+    volume_24h_float = _safe_to_float(volume_24h)
+    volume_24h_text = format_usd(volume_24h_float) if volume_24h_float is not None else None
+    liquidity_float = _safe_to_float(liquidity)
+    liquidity_text = format_usd(liquidity_float) if liquidity_float is not None else None
+
+    def _token_priority(entry: Dict[str, Any]) -> tuple[int, str]:
+        label = str(entry.get("label") or "").lower()
+        if "yes" in label:
+            return (0, label)
+        if "no" in label:
+            return (1, label)
+        return (2, label)
+
+    outcome_snippets: List[str] = []
+    outcome_labels = _parse_sequence(_extract_value("outcomes", "outcomeLabels")) or []
+    outcome_prices = _parse_sequence(_extract_value("outcomePrices", "outcomesPrices")) or []
+    for label, price in zip(outcome_labels, outcome_prices):
+        label_text = str(label).strip() or "Outcome"
+        price_value = _safe_to_float(price)
+        price_text = f"{price_value:.2f}" if price_value is not None else str(price).strip()
+        if not price_text:
+            continue
+        outcome_snippets.append(f"{label_text} {price_text}")
+        if len(outcome_snippets) >= 3:
+            break
+
+    if not outcome_snippets:
+        ordered_tokens = sorted(token_entries, key=_token_priority)
+        for token_entry in ordered_tokens:
+            label = token_entry.get("label") or token_entry.get("name") or "Outcome"
+            last_price = token_entry.get("last_price")
+            buy_price = token_entry.get("buy_price")
+            sell_price = token_entry.get("sell_price")
+
+            price_text = None
+            if isinstance(last_price, (int, float)):
+                price_text = f"{last_price:.2f}"
+            elif isinstance(buy_price, (int, float)) and isinstance(sell_price, (int, float)):
+                price_text = f"buy {buy_price:.2f}/sell {sell_price:.2f}"
+            elif isinstance(buy_price, (int, float)):
+                price_text = f"buy {buy_price:.2f}"
+            elif isinstance(sell_price, (int, float)):
+                price_text = f"sell {sell_price:.2f}"
+
+            if price_text:
+                outcome_snippets.append(f"{label}: {price_text}")
+            if len(outcome_snippets) >= 3:
+                break
+
     snapshot_lines: List[str] = []
     market_id = selected_candidate.get("market_id")
-    if market_id:
-        snapshot_lines.append(f"Market ID: {market_id}")
-    if title:
-        snapshot_lines.append(f"Title: {title}")
+    if market_id and title:
+        snapshot_lines.append(f"Market {market_id}: {title}")
+    elif title:
+        snapshot_lines.append(f"Market: {title}")
+    elif market_id:
+        snapshot_lines.append(f"Market {market_id}")
 
-    if status or close_time:
-        if close_time:
-            snapshot_lines.append(f"Status: {status or 'unknown'}; Ends: {close_time}")
-        else:
-            snapshot_lines.append(f"Status: {status}")
+    if event_title and (not title or event_title != title):
+        snapshot_lines.append(f"Event: {event_title}")
 
-    volume_float = _safe_to_float(volume_24h)
-    if volume_float is not None:
-        formatted_volume = format_usd(volume_float)
-        if formatted_volume:
-            snapshot_lines.append(f"24h Volume: {formatted_volume}")
+    timing_parts = [f"Start: {start_text}", f"End: {end_text}"]
+    if status:
+        timing_parts.append(f"Status: {status}")
+    if closed_flag is not None:
+        timing_parts.append(f"Closed: {'Yes' if closed_flag else 'No'}")
+    snapshot_lines.append("Timing: " + "; ".join(timing_parts))
 
-    liquidity_float = _safe_to_float(liquidity)
-    if liquidity_float is not None:
-        formatted_liquidity = format_usd(liquidity_float)
-        if formatted_liquidity:
-            snapshot_lines.append(f"Liquidity: {formatted_liquidity}")
+    liquidity_display = liquidity_text or "n/a"
+    if volume_total_text:
+        volume_display = volume_total_text
+        if volume_24h_text:
+            volume_display += f" (24h {volume_24h_text})"
+    elif volume_24h_text:
+        volume_display = f"{volume_24h_text} (24h)"
+    else:
+        volume_display = "n/a"
+    snapshot_lines.append(f"Liquidity: {liquidity_display}; Volume: {volume_display}")
 
-    context_entry = selected_candidate.get("context")
-    if isinstance(context_entry, dict):
-        event_title = context_entry.get("event_title") or context_entry.get("event")
-        if event_title:
-            snapshot_lines.append(f"Event: {event_title}")
-
-    token_lines: List[str] = []
-    for token_entry in token_entries[:4]:
-        token_id = token_entry.get("token_id")
-        label = token_entry.get("label") or "Outcome"
-        last_price = token_entry.get("last_price")
-        buy_price = token_entry.get("buy_price")
-        sell_price = token_entry.get("sell_price")
-
-        components: List[str] = []
-        if isinstance(last_price, (int, float)):
-            percent = _format_percent(last_price)
-            components.append(f"last {last_price:.3f} ({percent})" if percent else f"last {last_price:.3f}")
-        if isinstance(buy_price, (int, float)):
-            percent = _format_percent(buy_price)
-            components.append(f"buy {buy_price:.3f} ({percent})" if percent else f"buy {buy_price:.3f}")
-        if isinstance(sell_price, (int, float)):
-            percent = _format_percent(sell_price)
-            components.append(f"sell {sell_price:.3f} ({percent})" if percent else f"sell {sell_price:.3f}")
-
-        if components:
-            display_id = token_id if not token_id or len(token_id) <= 12 else f"{token_id[:6]}…{token_id[-4:]}"
-            token_lines.append(f"- {label}: {', '.join(components)} [token {display_id}]")
-
-    if token_lines:
-        snapshot_lines.append("Outcome Quotes:")
-        snapshot_lines.extend(token_lines)
-
-    if not snapshot_lines:
-        return None
+    if outcome_snippets:
+        snapshot_lines.append("Outcome prices: " + "; ".join(outcome_snippets[:3]))
+    else:
+        snapshot_lines.append("Outcome prices: n/a")
 
     return "\n".join(snapshot_lines)
 

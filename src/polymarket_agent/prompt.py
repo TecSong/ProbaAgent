@@ -37,6 +37,24 @@ SYSTEM_PROMPT = {
         "and for every associated market include outcome labels (Yes/No), their prices, liquidity, and volume. "
         "Within '🌟 *Trading Recommendations*', explicitly state model-derived probability estimates "
         "for the outcomes (e.g., Yes and No)."
+        "Summary example: "
+        """Event 123456: Will Bitcoin reach $150,000 in November\n
+        - Start date: 2025-07-23\n
+        - End date: 2025-01-02\n
+        - liquidity: 3000\n
+        - volume: 3000\n
+        - Market 567890:\n
+            - question: Will Bitcoin reach $150,000 in November?\n
+            - outcomes: Yes, No\n
+            - outcome prices: 0.5, 0.5\n
+            - liquidity: 1000\n
+            - volume: 1000\n
+        - Market 567891: Will Bitcoin reach $160,000 in November?\n
+            - question: Will Bitcoin reach $160,000 in November?\n
+            - outcomes: Yes, No\n
+            - outcome prices: 0.6, 0.4\n
+            - liquidity: 2000\n
+            - volume: 2000\n"""
     ),
     "instructions": (
         "You are the Polymarket Master Trader Insight Agent (Data-Aware). Your role is to "
