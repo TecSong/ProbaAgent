@@ -555,6 +555,34 @@ class PolymarketClient:
 
         return self._gamma_request("GET", "/public-search", params=params)
 
+    def list_trending_events(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return the most active Polymarket events ordered by recent volume."""
+
+        normalized_limit = max(1, min(int(limit or 1), 25))
+        params: Dict[str, Any] = {
+            "limit": normalized_limit,
+            "order": "volume24hr",
+            "ascending": "false",
+            "closed": "false",
+            "archived": "false",
+            "active": "true",
+        }
+
+        payload = self._gamma_request("GET", "/events", params=params)
+
+        events: Any
+        if isinstance(payload, list):
+            events = payload
+        elif isinstance(payload, dict):
+            events = payload.get("events") or payload.get("data") or payload.get("results")
+        else:
+            events = None
+
+        if not isinstance(events, list):
+            raise PolymarketClientError("Malformed events response from Gamma API.")
+
+        return [event for event in events if isinstance(event, dict)]
+
     def get_market_detail(self, market_id: str) -> Dict[str, Any]:
         """
         Fetch full metadata for a market ID per

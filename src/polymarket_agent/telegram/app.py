@@ -363,6 +363,7 @@ def build_application() -> Application:
             "/reset – clear conversation history\n"
             "/wallet – view your wallet address and balances\n"
             "/positions – list your current Polymarket positions\n"
+            "/trendings – show top Polymarket events by 24h volume\n"
             "/insight <market or event title> – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
             "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
@@ -705,6 +706,78 @@ def build_application() -> Application:
 
         await _send_search_results(message, query)
 
+    async def trendings(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
+        message = update.effective_message
+        if message is None:
+            return
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_authorized(user_id):
+            await _reject(update)
+            return
+
+        await message.chat.send_action(action=ChatAction.TYPING)
+
+        try:
+            events = client.list_trending_events(limit=10)
+        except PolymarketClientError:
+            LOGGER.exception("Trending events fetch failed")
+            await message.reply_text(
+                "_Error:_ Unable to fetch trending events right now.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if not events:
+            await message.reply_text(
+                "No trending events available at the moment.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        def _pick_number(payload: Dict[str, Any], *keys: str) -> Any:
+            for key in keys:
+                value = payload.get(key)
+                if value not in (None, "", "-", "NaN"):
+                    return value
+            return None
+
+        def _format_date(value: Any) -> str | None:
+            if not value:
+                return None
+            text = str(value).strip()
+            if not text:
+                return None
+            if "T" in text:
+                return text.split("T", 1)[0]
+            return text
+
+        lines: List[str] = ["🔥 *Trending Polymarket Events*", ""]
+
+        for idx, event in enumerate(events[:10], start=1):
+            title = event.get("title") or event.get("name") or event.get("question") or "Untitled event"
+            event_id = event.get("id") or event.get("eventId") or event.get("slug") or "?"
+            volume_value = _pick_number(event, "volume", "volume24hr", "volume24h", "volume1wk")
+            liquidity_value = _pick_number(event, "liquidity", "liquidity_num", "liquidityNum", "liquidityClob")
+            volume_text = format_usd(volume_value) or "-"
+            liquidity_text = format_usd(liquidity_value) or "-"
+            end_text = _format_date(
+                event.get("endDate")
+                or event.get("end_date")
+                or event.get("closeDate")
+                or event.get("endDateIso")
+            )
+            end_display = end_text or "-"
+            lines.append(f"{idx}. #{_sanitize(str(event_id))} {_sanitize(str(title))}")
+            lines.append(
+                f"   Volume: {volume_text} | Liquidity: {liquidity_text} | Ends: {end_display}"
+            )
+
+        await message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+        )
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
         if message is None:
@@ -827,6 +900,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(CommandHandler("wallet", wallet))
     application.add_handler(CommandHandler("positions", positions))
+    application.add_handler(CommandHandler("trendings", trendings))
     application.add_handler(CommandHandler("insight", insight))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
