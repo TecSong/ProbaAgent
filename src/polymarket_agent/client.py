@@ -669,7 +669,7 @@ class PolymarketClient:
             )
         options = PartialCreateOrderOptions(neg_risk=True)
         signed_order = self._client.create_order(order_args, options=options)
-        print("signed_order", signed_order)
+        LOGGER.debug("signed_order: %s", signed_order)
         try:
             response = self._client.post_order(signed_order)
         except Exception as exc:  # noqa: BLE001
