@@ -11,6 +11,7 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 from polymarket_agent.agent import build_polymarket_agent, run_agent_loop, update_history
+from polymarket_agent.arbitrage import detect_internal_arbitrage
 from polymarket_agent.client import PolymarketClientError
 from polymarket_agent.main import build_client_from_env
 from polymarket_agent.prompt import MAX_RESULTS
@@ -397,6 +398,7 @@ def build_application() -> Application:
             "/wallet – view your wallet address and balances\n"
             "/positions – list your current Polymarket positions\n"
             "/trendings – show top Polymarket events by 24h volume\n"
+            "/arbitrage – 查看 mock 内部套利机会，便于策略演练\n"
             "Insight buttons in search/trending results – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
             "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
@@ -834,6 +836,78 @@ def build_application() -> Application:
             else None,
         )
 
+    async def arbitrage(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
+        message = update.effective_message
+        if message is None:
+            return
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_authorized(user_id):
+            await _reject(update)
+            return
+
+        chat_id = message.chat_id if message.chat else None
+        LOGGER.info("Handling /arbitrage for chat_id=%s user_id=%s", chat_id, user_id)
+
+        await message.chat.send_action(action=ChatAction.TYPING)
+        try:
+            opportunities = detect_internal_arbitrage(client, max_items=3)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Mock arbitrage detector failed")
+            await message.reply_text(
+                "_Error:_ Mock arbitrage service is unavailable right now.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if not opportunities:
+            await message.reply_text(
+                "目前没有检测到 mock 套利机会，稍后再试。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        lines: List[str] = [
+            "💹 *内部套利雷达*",
+            "_以下示例来自 mock 数据，帮助演练 Polymarket 内部套利流程。_",
+            "",
+        ]
+        for idx, opp in enumerate(opportunities, start=1):
+            title = _sanitize(opp.event_title)
+            profit_text = _format_signed_percent(opp.profit_rate, precision=2)
+            invest_text = format_usd(opp.suggested_investment) or "-"
+            profit_usd = format_usd(opp.expected_profit) or "-"
+            lines.append(f"*#{idx} {title}*")
+            lines.append(f"事件: #{_sanitize(opp.event_id)}  市场: {_sanitize(opp.market_id)}")
+            if opp.closes_at:
+                lines.append(f"截止: {_sanitize(opp.closes_at)}")
+            lines.append(f"预计利润率: {profit_text}")
+            lines.append(f"建议投入: {invest_text} | 预计利润: {profit_usd}")
+            lines.append("组合报价:")
+            for quote in opp.outcomes:
+                label = _sanitize(quote.label)
+                lines.append(
+                    f" - {label}: {quote.price:.3f} / 可用 ≈ {int(quote.max_size)} 份"
+                )
+            if opp.risks:
+                lines.append("风险: " + "；".join(_sanitize(text) for text in opp.risks))
+            if opp.notes:
+                lines.append("备注: " + "；".join(_sanitize(text) for text in opp.notes))
+            lines.append("")
+
+        payload = "\n".join(lines).strip()
+        try:
+            await message.reply_text(
+                payload,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True,
+            )
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to send arbitrage payload")
+            await message.reply_text(
+                "_Error:_ Arbitrage payload contained invalid formatting. Please retry later.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
         if message is None:
@@ -957,6 +1031,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("wallet", wallet))
     application.add_handler(CommandHandler("positions", positions))
     application.add_handler(CommandHandler("trendings", trendings))
+    application.add_handler(CommandHandler("arbitrage", arbitrage))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
     application.add_handler(CallbackQueryHandler(wallet_qr_callback, pattern=r"^wallet:qr:"))
