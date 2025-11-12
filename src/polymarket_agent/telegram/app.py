@@ -127,7 +127,7 @@ def build_application() -> Application:
                 )
         msg = (
             "Hi! I'm the Polymarket trading assistant. "
-            "Ask for trade actions in natural language, or use /insight <market or event> for fresh AI intel."
+            "Ask for trade actions in natural language and I'll surface fresh AI intel when needed."
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -397,7 +397,7 @@ def build_application() -> Application:
             "/wallet – view your wallet address and balances\n"
             "/positions – list your current Polymarket positions\n"
             "/trendings – show top Polymarket events by 24h volume\n"
-            "/insight <market or event title> – fetch AI insights using web search\n"
+            "Insight buttons in search/trending results – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
             "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
             "Otherwise, just send messages describing what you want to do on Polymarket."
@@ -957,7 +957,6 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("wallet", wallet))
     application.add_handler(CommandHandler("positions", positions))
     application.add_handler(CommandHandler("trendings", trendings))
-    application.add_handler(CommandHandler("insight", insight))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
     application.add_handler(CallbackQueryHandler(wallet_qr_callback, pattern=r"^wallet:qr:"))
