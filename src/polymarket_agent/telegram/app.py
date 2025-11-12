@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from secrets import token_hex
 from typing import Any, Dict, List
 from urllib.parse import quote_plus
 
@@ -81,6 +82,7 @@ def build_application() -> Application:
     histories: Dict[int, List[Dict[str, str]]] = {}
     search_sessions: Dict[int, Dict[str, Any]] = {}
     insight_sessions: Dict[int, Dict[str, Any]] = {}
+    inline_insight_sessions: Dict[str, Dict[str, Any]] = {}
     agents: Dict[int, Dict[str, Any]] = {}
 
     def _generate_market_insight(query: str, max_results: int = MAX_RESULTS) -> str:
@@ -125,7 +127,7 @@ def build_application() -> Application:
                 )
         msg = (
             "Hi! I'm the Polymarket trading assistant. "
-            "Ask for trade actions in natural language, or use /insight <market or event> for fresh AI intel."
+            "Ask for trade actions in natural language and I'll surface fresh AI intel when needed."
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -184,6 +186,18 @@ def build_application() -> Application:
         text = f"{percent:+.{precision}f}".rstrip("0").rstrip(".")
         return f"{text}%" if text else "0%"
 
+    def _pack_inline_buttons(buttons: List[InlineKeyboardButton], per_row: int = 2) -> List[List[InlineKeyboardButton]]:
+        rows: List[List[InlineKeyboardButton]] = []
+        current_row: List[InlineKeyboardButton] = []
+        for button in buttons:
+            current_row.append(button)
+            if len(current_row) >= per_row:
+                rows.append(current_row)
+                current_row = []
+        if current_row:
+            rows.append(current_row)
+        return rows
+
     async def _send_search_results(message: Message, query: str) -> None:
         await message.chat.send_action(action=ChatAction.TYPING)
 
@@ -227,8 +241,9 @@ def build_application() -> Application:
             "*Events:*",
         ]
 
-        keyboard_rows: List[List[InlineKeyboardButton]] = []
+        keyboard_buttons: List[InlineKeyboardButton] = []
         event_map: Dict[str, str] = {}
+        session_id = token_hex(8)
 
         for idx, event in enumerate(events[:3], start=1):
             raw_title = (
@@ -289,19 +304,27 @@ def build_application() -> Application:
 
             key = str(idx)
             event_map[key] = raw_title_str
-            keyboard_rows.append(
-                [InlineKeyboardButton(f"make insights for #{idx}", callback_data=f"insight:{key}")]
+            keyboard_buttons.append(
+                InlineKeyboardButton(
+                    f"🧠 Insight #{idx}",
+                    callback_data=f"insight:{session_id}:{key}",
+                )
             )
 
         chat_id = message.chat_id if message.chat else None
-        if chat_id is not None:
-            search_sessions[chat_id] = {"event_insights": event_map}
+        if chat_id is not None and event_map:
+            inline_insight_sessions[session_id] = {
+                "chat_id": chat_id,
+                "events": event_map,
+            }
 
         await message.reply_text(
             "\n".join(line for line in lines if line is not None),
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=False,
-            reply_markup=InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None,
+            reply_markup=InlineKeyboardMarkup(_pack_inline_buttons(keyboard_buttons, per_row=2))
+            if keyboard_buttons
+            else None,
         )
 
     async def event_insight_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
@@ -321,15 +344,25 @@ def build_application() -> Application:
             return
 
         data = query.data or ""
-        key = data.split(":", 1)[1] if data.startswith("insight:") else ""
-        session = search_sessions.get(chat.id) or {}
+        session_id = ""
+        key = ""
+        if data.startswith("insight:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                session_id, key = parts[1], parts[2]
+
+        session_payload = inline_insight_sessions.get(session_id) or {}
+        if session_payload.get("chat_id") != chat.id:
+            insights_map = None
+        else:
+            insights_map = session_payload.get("events")
+
         event_title = None
-        insights_map = session.get("event_insights") if isinstance(session, dict) else None
         if isinstance(insights_map, dict):
             event_title = insights_map.get(key)
 
         if not event_title:
-            await query.answer("Search results expired. Run /search again.", show_alert=True)
+            await query.answer("Results expired. Run the command again.", show_alert=True)
             return
 
         await query.answer("Generating insight…", show_alert=False)
@@ -363,7 +396,8 @@ def build_application() -> Application:
             "/reset – clear conversation history\n"
             "/wallet – view your wallet address and balances\n"
             "/positions – list your current Polymarket positions\n"
-            "/insight <market or event title> – fetch AI insights using web search\n"
+            "/trendings – show top Polymarket events by 24h volume\n"
+            "Insight buttons in search/trending results – fetch AI insights using web search\n"
             "/search <keywords> – browse related Polymarket markets or events\n"
             "/debugmarkdown [text] – inspect Markdown V2 formatting (defaults to sample)\n"
             "Otherwise, just send messages describing what you want to do on Polymarket."
@@ -705,6 +739,101 @@ def build_application() -> Application:
 
         await _send_search_results(message, query)
 
+    async def trendings(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
+        message = update.effective_message
+        if message is None:
+            return
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_authorized(user_id):
+            await _reject(update)
+            return
+
+        await message.chat.send_action(action=ChatAction.TYPING)
+
+        try:
+            events = client.list_trending_events(limit=10)
+        except PolymarketClientError:
+            LOGGER.exception("Trending events fetch failed")
+            await message.reply_text(
+                "_Error:_ Unable to fetch trending events right now.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if not events:
+            await message.reply_text(
+                "No trending events available at the moment.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        def _pick_number(payload: Dict[str, Any], *keys: str) -> Any:
+            for key in keys:
+                value = payload.get(key)
+                if value not in (None, "", "-", "NaN"):
+                    return value
+            return None
+
+        def _format_date(value: Any) -> str | None:
+            if not value:
+                return None
+            text = str(value).strip()
+            if not text:
+                return None
+            if "T" in text:
+                return text.split("T", 1)[0]
+            return text
+
+        lines: List[str] = ["🔥 *Trending Polymarket Events*", ""]
+        keyboard_buttons: List[InlineKeyboardButton] = []
+        event_map: Dict[str, str] = {}
+        session_id = token_hex(8)
+
+        for idx, event in enumerate(events[:10], start=1):
+            raw_title = (
+                event.get("title") or event.get("name") or event.get("question") or "Untitled event"
+            )
+            title_text = str(raw_title).strip() or "Untitled event"
+            event_id = event.get("id") or event.get("eventId") or event.get("slug") or "?"
+            volume_value = _pick_number(event, "volume", "volume24hr", "volume24h", "volume1wk")
+            liquidity_value = _pick_number(event, "liquidity", "liquidity_num", "liquidityNum", "liquidityClob")
+            volume_text = format_usd(volume_value) or "-"
+            liquidity_text = format_usd(liquidity_value) or "-"
+            end_text = _format_date(
+                event.get("endDate")
+                or event.get("end_date")
+                or event.get("closeDate")
+                or event.get("endDateIso")
+            )
+            end_display = end_text or "-"
+            lines.append(f"{idx}. #{_sanitize(str(event_id))} {_sanitize(title_text)}")
+            lines.append(
+                f"   Volume: {volume_text} | Liquidity: {liquidity_text} | Ends: {end_display}"
+            )
+            key = str(idx)
+            event_map[key] = title_text
+            keyboard_buttons.append(
+                InlineKeyboardButton(
+                    f"🧠 Insight #{idx}", callback_data=f"insight:{session_id}:{key}"
+                )
+            )
+
+        chat_id = message.chat_id if message.chat else None
+        if chat_id is not None and event_map:
+            inline_insight_sessions[session_id] = {
+                "chat_id": chat_id,
+                "events": event_map,
+            }
+
+        await message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(_pack_inline_buttons(keyboard_buttons, per_row=2))
+            if keyboard_buttons
+            else None,
+        )
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: ARG001
         message = update.message
         if message is None:
@@ -827,7 +956,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(CommandHandler("wallet", wallet))
     application.add_handler(CommandHandler("positions", positions))
-    application.add_handler(CommandHandler("insight", insight))
+    application.add_handler(CommandHandler("trendings", trendings))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("debugmarkdown", debug_markdown))
     application.add_handler(CallbackQueryHandler(wallet_qr_callback, pattern=r"^wallet:qr:"))
