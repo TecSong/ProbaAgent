@@ -12,6 +12,9 @@ def main():
     )
     print(response)
 
+    # get creds
+    # print(client._client.creds)
+
     # order = client._client.get_order(order_id="0x19ac160afeefaae57a8ac60bb7d76ff3fc8797f1238cfbf0614a7b049ca3e805")
     # print(order)
     # trades = client._client.get_trades()
