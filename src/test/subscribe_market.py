@@ -107,7 +107,7 @@ if __name__ == "__main__":
     asset_ids = [
         "86792566865618315352054762614265207710146164604619158781420653749604861145936",
     ]
-    condition_ids = [] # no really need to filter by this one
+    condition_ids = ["0x455281e17dc8518a833ca518c5a6aaf409712f61682725ad2907fb6d0a68c2f2"] # no really need to filter by this one
 
     auth = {"apiKey": api_key, "secret": api_secret, "passphrase": api_passphrase}
 
@@ -118,5 +118,5 @@ if __name__ == "__main__":
         USER_CHANNEL, url, condition_ids, auth, None, True
     )
 
-    market_connection.run()
-    # user_connection.run()
+    # market_connection.run()
+    user_connection.run()
