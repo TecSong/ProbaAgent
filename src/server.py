@@ -49,6 +49,33 @@ def _sanitize_history(candidate: Any) -> List[Dict[str, str]]:
     return history
 
 
+def _wallet_context_prompt(context: Any) -> str | None:
+    if not isinstance(context, dict):
+        return None
+
+    is_connected = bool(context.get("isConnected") and context.get("address"))
+    if not is_connected:
+        return "Wallet context: user is not connected to a wallet."
+
+    address = context.get("address") or ""
+    chain_id = context.get("chainId") or context.get("networkChainId")
+    network = context.get("networkName")
+    balance_wei = context.get("balanceWei")
+    balance_eth = context.get("balanceEth")
+
+    parts = ["Wallet context: user is connected.", f"Address: {address}."]
+    if chain_id:
+        parts.append(f"Chain ID: {chain_id}.")
+    if network:
+        parts.append(f"Network: {network}.")
+    if balance_eth:
+        parts.append(f"Balance (ETH): {balance_eth}.")
+    elif balance_wei:
+        parts.append(f"Balance (wei): {balance_wei}.")
+
+    return " ".join(parts)
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     allowed_origin = os.getenv("FRONTEND_ORIGIN", "*")
@@ -69,6 +96,12 @@ def create_app() -> Flask:
             return jsonify({"error": "message is required"}), 400
 
         history = _sanitize_history(payload.get("history"))
+        wallet_prompt = _wallet_context_prompt(
+            payload.get("walletContext") or payload.get("wallet_context")
+        )
+        agent_history = list(history)
+        if wallet_prompt:
+            agent_history.append({"role": "system", "content": wallet_prompt})
         try:
             if agent_holder["agent"] is None:
                 agent_holder["agent"] = _create_agent()
@@ -86,7 +119,7 @@ def create_app() -> Flask:
             )
 
         try:
-            result = run_agent_loop(agent, message, history)
+            result = run_agent_loop(agent, message, agent_history)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Agent execution failed")
             return (

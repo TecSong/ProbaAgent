@@ -6,6 +6,17 @@ import WalletConnector, { useWalletState } from "./components/wallet.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
+const buildWalletContext = (wallet) => {
+  const chainId = wallet?.chainId ?? wallet?.network?.chainId;
+  return {
+    isConnected: Boolean(wallet?.isConnected && wallet?.address),
+    address: wallet?.address || null,
+    chainId: chainId != null ? chainId.toString() : null,
+    networkName: wallet?.network?.name || null,
+    balanceWei: wallet?.balance != null ? wallet.balance.toString() : null,
+  };
+};
+
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -39,11 +50,13 @@ export default function App() {
     setIsSending(true);
     setStatus("Contacting agent…");
     setError("");
+    const walletContext = buildWalletContext(walletState.wallet);
 
     try {
       const { data } = await axios.post(`${API_BASE}/chat`, {
         message: trimmed,
-        history: previousHistory
+        history: previousHistory,
+        walletContext,
       });
       setMessages(data.history || optimisticHistory);
       setStatus("Ready");
