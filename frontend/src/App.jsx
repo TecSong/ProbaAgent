@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 import ChatMessage from "./components/ChatMessage.jsx";
-import WalletConnector from "./components/wallet.jsx";
+import WalletConnector, { useWalletState } from "./components/wallet.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
@@ -13,6 +13,7 @@ export default function App() {
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState("");
   const feedRef = useRef(null);
+  const walletState = useWalletState();
 
   useEffect(() => {
     if (feedRef.current) {
@@ -68,7 +69,7 @@ export default function App() {
           <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
         </div>
         <div className="chat-header-right">
-          <WalletConnector />
+          <WalletConnector {...walletState} />
         </div>
       </header>
 
