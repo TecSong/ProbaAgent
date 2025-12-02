@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 import ChatMessage from "./components/ChatMessage.jsx";
+import WalletConnector from "./components/wallet.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
@@ -62,8 +63,13 @@ export default function App() {
   return (
     <div className="chat-shell">
       <header className="chat-header">
-        <h1>Polymarket Chatbot</h1>
-        <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
+        <div className="chat-header-left">
+          <h1>Polymarket Chatbot</h1>
+          <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
+        </div>
+        <div className="chat-header-right">
+          <WalletConnector />
+        </div>
       </header>
 
       <section className="chat-feed" ref={feedRef}>
