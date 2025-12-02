@@ -2,8 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 import ChatMessage from "./components/ChatMessage.jsx";
+import WalletConnector, { useWalletState } from "./components/wallet.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+
+const buildWalletContext = (wallet) => {
+  const chainId = wallet?.chainId ?? wallet?.network?.chainId;
+  return {
+    isConnected: Boolean(wallet?.isConnected && wallet?.address),
+    address: wallet?.address || null,
+    chainId: chainId != null ? chainId.toString() : null,
+    networkName: wallet?.network?.name || null,
+    balanceWei: wallet?.balance != null ? wallet.balance.toString() : null,
+  };
+};
 
 export default function App() {
   const [messages, setMessages] = useState([]);
@@ -12,6 +24,7 @@ export default function App() {
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState("");
   const feedRef = useRef(null);
+  const walletState = useWalletState();
 
   useEffect(() => {
     if (feedRef.current) {
@@ -37,11 +50,13 @@ export default function App() {
     setIsSending(true);
     setStatus("Contacting agent…");
     setError("");
+    const walletContext = buildWalletContext(walletState.wallet);
 
     try {
       const { data } = await axios.post(`${API_BASE}/chat`, {
         message: trimmed,
-        history: previousHistory
+        history: previousHistory,
+        walletContext,
       });
       setMessages(data.history || optimisticHistory);
       setStatus("Ready");
@@ -62,8 +77,13 @@ export default function App() {
   return (
     <div className="chat-shell">
       <header className="chat-header">
-        <h1>Polymarket Chatbot</h1>
-        <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
+        <div className="chat-header-left">
+          <h1>Polymarket Chatbot</h1>
+          <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
+        </div>
+        <div className="chat-header-right">
+          <WalletConnector {...walletState} />
+        </div>
       </header>
 
       <section className="chat-feed" ref={feedRef}>
