@@ -75,55 +75,62 @@ export default function App() {
     "Ask about your open orders, place a trade, or inspect markets. Shift+Enter for a new line.";
 
   return (
-    <div className="chat-shell">
-      <header className="chat-header">
-        <div className="chat-header-left">
-          <h1>Polymarket Chatbot</h1>
-          <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
-        </div>
-        <div className="chat-header-right">
-          <WalletConnector {...walletState} />
-        </div>
-      </header>
+    <div className="chat-layout">
+      <aside className="chat-sidebar">
+        <div className="chat-sidebar__header">Conversation History</div>
+        <div className="chat-sidebar__body" />
+      </aside>
 
-      <section className="chat-feed" ref={feedRef}>
-        {messages.length === 0 && (
-          <div className="message assistant">
-            <div className="message-avatar">A</div>
-            <div className="message-body">
-              <strong>Agent</strong>
-              <div>
-                Hello! I can list markets, fetch quotes, place orders, or cancel trades on
-                Polymarket. What would you like to do?
+      <div className="chat-shell">
+        <header className="chat-header">
+          <div className="chat-header-left">
+            <h1>Polymarket Chatbot</h1>
+            <p>Talk to a LangChain-powered assistant backed by the Polymarket CLOB.</p>
+          </div>
+          <div className="chat-header-right">
+            <WalletConnector {...walletState} />
+          </div>
+        </header>
+
+        <section className="chat-feed" ref={feedRef}>
+          {messages.length === 0 && (
+            <div className="message assistant">
+              <div className="message-avatar">A</div>
+              <div className="message-body">
+                <strong>Agent</strong>
+                <div>
+                  Hello! I can list markets, fetch quotes, place orders, or cancel trades on
+                  Polymarket. What would you like to do?
+                </div>
               </div>
             </div>
-          </div>
-        )}
-        {messages.map((message, index) => (
-          <ChatMessage key={`${message.role}-${index}`} {...message} />
-        ))}
-      </section>
+          )}
+          {messages.map((message, index) => (
+            <ChatMessage key={`${message.role}-${index}`} {...message} />
+          ))}
+        </section>
 
-      <div className="chat-form">
-        <form onSubmit={handleSubmit}>
-          <textarea
-            value={input}
-            placeholder={placeholder}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                handleSubmit(event);
-              }
-            }}
-            disabled={isSending}
-          />
-          <button type="submit" disabled={isSending}>
-            {isSending ? "Thinking…" : "Send"}
-          </button>
-        </form>
-        <div className={`status-bar ${error ? "error" : ""}`}>
-          {error ? error : status}
+        <div className="chat-form">
+          <form onSubmit={handleSubmit}>
+            <textarea
+              value={input}
+              placeholder={placeholder}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  handleSubmit(event);
+                }
+              }}
+              disabled={isSending}
+            />
+            <button type="submit" disabled={isSending}>
+              {isSending ? "Thinking…" : "Send"}
+            </button>
+          </form>
+          <div className={`status-bar ${error ? "error" : ""}`}>
+            {error ? error : status}
+          </div>
         </div>
       </div>
     </div>
