@@ -30,7 +30,7 @@ export default function App() {
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isSending]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
