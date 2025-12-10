@@ -30,7 +30,7 @@ export default function App() {
     if (feedRef.current) {
       feedRef.current.scrollTop = feedRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isSending]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -108,6 +108,16 @@ export default function App() {
           {messages.map((message, index) => (
             <ChatMessage key={`${message.role}-${index}`} {...message} />
           ))}
+          {isSending && (
+            <div className="message assistant typing">
+              <div className="message-avatar">A</div>
+              <div className="message-body typing-body" aria-label="Agent is typing">
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+              </div>
+            </div>
+          )}
         </section>
 
         <div className="chat-form">
