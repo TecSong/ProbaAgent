@@ -1,109 +1,127 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
+import {
+  useAppKit,
+  useAppKitAccount,
+  useAppKitNetwork,
+  useAppKitProvider,
+  useDisconnect,
+} from "@reown/appkit/react";
+import { polygon } from "@reown/appkit/networks";
 
-const initWallet = {
-  address: null,
-  isConnected: false,
-  balance: 0,
-  chainId: null,
-  network: null,
-};
+const DEFAULT_NETWORK = polygon;
 
 const EXPECTED_CHAIN_ID = (() => {
   const raw = import.meta.env.VITE_EXPECTED_CHAIN_ID;
-  if (raw === undefined || raw === null || raw === "") return 137; // default to Polygon
+  const fallback = DEFAULT_NETWORK.id;
+  if (raw === undefined || raw === null || raw === "") return fallback;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : 137;
+  return Number.isFinite(parsed) ? parsed : fallback;
 })();
 
-const EXPECTED_NETWORK_NAME = import.meta.env.VITE_EXPECTED_NETWORK_NAME || "Polygon";
+const EXPECTED_NETWORK_NAME = import.meta.env.VITE_EXPECTED_NETWORK_NAME || DEFAULT_NETWORK.name;
 
 export function useWalletState() {
-    const [wallet, setWallet] = useState(initWallet);
-    const [isConnecting, setIsConnecting] = useState(false);
-    const [isDisconnecting, setIsDisconnecting] = useState(false);
-    const [isSwitching, setIsSwitching] = useState(false);
-  
-    const handleConnect = async () => {
-        if (!window.ethereum) {
-          alert("No wallet detected. Please install MetaMask or another Ethereum wallet.");
-          return;
-        }
-    
-        try {
-          setIsConnecting(true);
-    
-          const provider = new ethers.BrowserProvider(window.ethereum);
-          const accounts = await provider.send("eth_requestAccounts", []);
-    
-          const network = await provider.getNetwork();
-          const balance = await provider.getBalance(accounts[0]);
-    
-          setWallet((prev) => ({
-            ...prev,
-            address: accounts[0],
-            balance,
-            network,
-            chainId: network.chainId,
-            isConnected: true,
-          }));
-        } catch (error) {
-          console.error("Failed to connect wallet:", error);
-        } finally {
-          setIsConnecting(false);
-        }
-      };
-    
-    const handleSwitchNetwork = async () => {
-        if (!window.ethereum) {
-          alert("No wallet detected. Please install MetaMask or another Ethereum wallet.");
-          return;
-        }
-        if (!EXPECTED_CHAIN_ID) return;
-        try {
-          setIsSwitching(true);
-          await window.ethereum.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: `0x${EXPECTED_CHAIN_ID.toString(16)}` }],
-          });
-          await handleConnect();
-        } catch (error) {
-          console.error("Failed to switch network:", error);
-        } finally {
-          setIsSwitching(false);
-        }
-      };
-    
-    const handleDisconnect = async () => {
-        setIsDisconnecting(true);
-        try {
-            if (window.ethereum?.request) {
-            // Ask the wallet to revoke permissions so it disconnects from every chain session.
-            await window.ethereum.request({
-                method: "wallet_revokePermissions",
-                params: [{ eth_accounts: {} }],
-            });
-            }
-        } catch (err) {
-            console.warn("Wallet refused to revoke permissions:", err);
-        } finally {
-            setWallet({...initWallet});
-            setIsDisconnecting(false);
-        }
+  const { open } = useAppKit();
+  const { disconnect } = useDisconnect();
+  const { address, isConnected, status } = useAppKitAccount();
+  const { caipNetwork, chainId, switchNetwork } = useAppKitNetwork();
+  const { walletProvider } = useAppKitProvider("eip155");
+
+  const [balance, setBalance] = useState(null);
+  const [isFetchingBalance, setIsFetchingBalance] = useState(false);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [isOpeningModal, setIsOpeningModal] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadBalance = async () => {
+      if (!isConnected || !walletProvider || !address) {
+        if (!cancelled) setBalance(null);
+        return;
+      }
+      setIsFetchingBalance(true);
+      try {
+        const provider = new ethers.BrowserProvider(walletProvider);
+        const value = await provider.getBalance(address);
+        if (!cancelled) setBalance(value);
+      } catch (error) {
+        console.warn("Failed to fetch wallet balance:", error);
+        if (!cancelled) setBalance(null);
+      } finally {
+        if (!cancelled) setIsFetchingBalance(false);
+      }
     };
-  
+
+    loadBalance();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [walletProvider, isConnected, address, chainId]);
+
+  const handleConnect = useCallback(async () => {
+    try {
+      setIsOpeningModal(true);
+      await open({ view: "Connect" });
+    } catch (error) {
+      console.error("Failed to open wallet connect modal:", error);
+    } finally {
+      setIsOpeningModal(false);
+    }
+  }, [open]);
+
+  const handleDisconnect = useCallback(async () => {
+    setIsDisconnecting(true);
+    try {
+      await disconnect();
+    } catch (error) {
+      console.warn("Failed to disconnect wallet:", error);
+    } finally {
+      setIsDisconnecting(false);
+    }
+  }, [disconnect]);
+
+  const handleSwitchNetwork = useCallback(async () => {
+    if (!switchNetwork) return;
+    setIsSwitching(true);
+    try {
+      await switchNetwork(DEFAULT_NETWORK);
+    } catch (error) {
+      console.error("Failed to switch network:", error);
+    } finally {
+      setIsSwitching(false);
+    }
+  }, [switchNetwork]);
+
+  const wallet = useMemo(() => {
+    const derivedChainId = chainId ?? caipNetwork?.chainId ?? caipNetwork?.id ?? null;
+
     return {
-      wallet,
-      isConnecting,
-      isDisconnecting,
-      isSwitching,
-      expectedChainId: EXPECTED_CHAIN_ID,
-      expectedNetworkName: EXPECTED_NETWORK_NAME,
-      handleConnect,
-      handleDisconnect,
-      handleSwitchNetwork,
+      address: address || null,
+      isConnected,
+      balance,
+      chainId: derivedChainId,
+      network: caipNetwork || null,
     };
-  }
+  }, [address, isConnected, balance, chainId, caipNetwork]);
+
+  const isConnecting = status === "connecting" || isOpeningModal;
+
+  return {
+    wallet,
+    isConnecting,
+    isDisconnecting,
+    isSwitching,
+    expectedChainId: EXPECTED_CHAIN_ID,
+    expectedNetworkName: EXPECTED_NETWORK_NAME,
+    handleConnect,
+    handleDisconnect,
+    handleSwitchNetwork,
+    isFetchingBalance,
+  };
+}
 
 export default function WalletConnector({
   wallet,

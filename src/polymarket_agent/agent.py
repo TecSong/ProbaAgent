@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Sequence
 
 from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver  
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 
@@ -31,7 +32,7 @@ def build_polymarket_agent(
         default_platform_id=default_platform_id,
     )
     llm = ChatOpenAI(model=model, temperature=temperature)
-    return create_agent(model=llm, tools=tools, system_prompt=system_prompt, debug=True)
+    return create_agent(model=llm, tools=tools, system_prompt=system_prompt, debug=True, checkpoint=InMemorySaver())
 
 
 def update_history(history: List[Dict[str, str]], user_text: str, agent_output: str) -> None:
@@ -46,7 +47,7 @@ def run_agent_loop(
 ) -> dict:
     messages: List[Any] = list(history or [])
     messages.append({"role": "user", "content": user_text})
-    result = agent.invoke({"messages": messages})
+    result = agent.invoke({"messages": messages}, {"configurable": {"thread_id": "1"}})
 
     output = ""
     if isinstance(result, dict):
