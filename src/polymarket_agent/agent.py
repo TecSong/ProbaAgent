@@ -6,6 +6,7 @@ from langchain.agents import create_agent
 from langgraph.checkpoint.memory import InMemorySaver  
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
+from langchain_deepseek import ChatDeepSeek
 
 from .client import PolymarketClient
 from .tools import build_polymarket_tools
@@ -20,7 +21,7 @@ SYSTEM_INSTRUCTIONS = (
 
 def build_polymarket_agent(
     client: PolymarketClient,
-    model: str = "gpt-4o-mini",
+    model: str = "deepseek-chat",
     temperature: float = 0.0,
     system_prompt: str = SYSTEM_INSTRUCTIONS,
     default_platform: str | None = None,
@@ -31,7 +32,7 @@ def build_polymarket_agent(
         default_platform=default_platform,
         default_platform_id=default_platform_id,
     )
-    llm = ChatOpenAI(model=model, temperature=temperature)
+    llm = ChatDeepSeek(model=model, temperature=temperature)
     return create_agent(model=llm, tools=tools, system_prompt=system_prompt, debug=True, checkpoint=InMemorySaver())
 
 
